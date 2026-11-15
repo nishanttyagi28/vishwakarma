@@ -39,6 +39,7 @@ FOUNDER = "founder"
 LEGAL_TRANSITIONS: set[tuple[str, str]] = {
     (BACKLOG, READY),
     (READY, IN_PROGRESS),
+    (IN_PROGRESS, READY),  # recovery: claimed run died before completing
     (IN_PROGRESS, REVIEW),
     (REVIEW, TESTING),
     (REVIEW, CHANGES_REQUESTED),
@@ -306,6 +307,30 @@ class TaskLedger:
     def back_to_review(self, task_id: str, actor: str, reason: str) -> TaskRecord:
         """TESTING -> REVIEW (e.g. gates failed and a decision is needed)."""
         return self._transition(task_id, REVIEW, actor, reason)
+
+    def recover_task(self, task_id: str, max_retries: int,
+                     actor: str = "recovery") -> TaskRecord:
+        """IN_PROGRESS -> READY after an interrupted run, with retry budgeting."""
+        row = self._get_row(task_id)
+        retries = row["retries_used"] + 1
+        if retries > max_retries:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE tasks SET retries_used = ?, updated_at = ? WHERE id = ?",
+                    (retries, _now(), task_id),
+                )
+            return self._transition(
+                task_id, BLOCKED_HUMAN, actor,
+                f"retry budget exhausted after {retries - 1} interruptions",
+            )
+        with self._conn:
+            self._conn.execute(
+                "UPDATE tasks SET retries_used = ?, updated_at = ? WHERE id = ?",
+                (retries, _now(), task_id),
+            )
+        return self._transition(
+            task_id, READY, actor, f"recovered after interruption (retry {retries})"
+        )
 
     def record_gates(self, task_id: str, payload: str, source: str = "gate_runner") -> GateResult:
         """Record a gate result. Written once with its hash; never updated."""

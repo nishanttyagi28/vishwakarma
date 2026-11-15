@@ -129,6 +129,10 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
 
     sub.add_parser("status")
 
+    p_recover = sub.add_parser("recover")
+    p_recover.add_argument("--revert", action="store_true",
+                           help="human-invoked: restore uncommitted files from git HEAD")
+
     args = parser.parse_args(argv)
     config = load_config(config_path)
     ledger = TaskLedger(db_path, max_revisions=config.limits.max_revisions_per_task)
@@ -198,6 +202,20 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
                 )
                 _print(out, report.summary())
                 _print(out, "GATES PASSED" if report.passed else "GATES FAILED")
+        elif args.cmd == "recover":
+            from forge.recovery import plan_recovery, revert_files
+
+            plan = plan_recovery(
+                ledger, config, config.limits.max_retries_per_run
+            )
+            for item in plan.interrupted:
+                _print(out, f"{item.task_id}: {item.action} ({item.detail})")
+            for ws_name, files in plan.uncommitted.items():
+                _print(out, f"uncommitted in {ws_name}: {', '.join(files)}")
+                if args.revert:
+                    _print(out, revert_files(Path(config.workspaces[ws_name]), files))
+            if not plan.interrupted and not plan.uncommitted:
+                _print(out, "nothing to recover")
         elif args.cmd == "status":
             counts: dict[str, int] = {}
             for t in ledger.list_tasks():

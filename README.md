@@ -16,7 +16,7 @@ gates, and a persistent task ledger. The first product it builds is
 | F-003 | Review gates + CLI | **implemented, gates green, self-hosted lifecycle verified** |
 | F-004 | Prompt Architect runtime | **implemented, gates green, E2E PA mission verified** |
 | F-005 | Chief Engineer runtime | **implemented, gates green, autonomous mission verified** |
-| F-006 | Recovery + resumable execution | not started |
+| F-006 | Recovery + resumable execution | **implemented, gates green, live drill verified** |
 | F-007 | Live smoke missions on Ollama | not started |
 
 ## Layout

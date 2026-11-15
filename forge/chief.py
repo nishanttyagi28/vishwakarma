@@ -357,7 +357,27 @@ class ChiefEngineer:
                 created.append(spec.id)
         return created
 
-    def run_roadmap(self, roadmap: Roadmap, max_tasks: int = 10) -> list[TaskOutcome]:
+    def run_roadmap(self, roadmap: Roadmap, max_tasks: int = 10,
+                    recover: bool = True) -> list[TaskOutcome]:
+        if recover:
+            from forge.recovery import plan_recovery
+
+            plan = plan_recovery(
+                self.ledger, self.config, self.config.limits.max_retries_per_run
+            )
+            if plan.interrupted:
+                self.journal.record(
+                    "recovery",
+                    "recovered after interruption: "
+                    + ", ".join(f"{i.task_id}({i.action})" for i in plan.interrupted),
+                )
+            for ws_name, files in plan.uncommitted.items():
+                self.journal.record(
+                    "uncommitted_changes",
+                    f"workspace {ws_name} has uncommitted changes; "
+                    "reported, not reverted: " + ", ".join(files[:5]),
+                    reversible=False,
+                )
         self.sync_roadmap(roadmap)
         outcomes: list[TaskOutcome] = []
         executed = 0
