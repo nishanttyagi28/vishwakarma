@@ -303,6 +303,10 @@ class TaskLedger:
     def request_gates(self, task_id: str, actor: str = "chief") -> TaskRecord:
         return self._transition(task_id, TESTING, actor, "quality gates requested")
 
+    def back_to_review(self, task_id: str, actor: str, reason: str) -> TaskRecord:
+        """TESTING -> REVIEW (e.g. gates failed and a decision is needed)."""
+        return self._transition(task_id, REVIEW, actor, reason)
+
     def record_gates(self, task_id: str, payload: str, source: str = "gate_runner") -> GateResult:
         """Record a gate result. Written once with its hash; never updated."""
         row = self._get_row(task_id)
