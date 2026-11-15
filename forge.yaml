@@ -9,8 +9,8 @@ workspaces:
   returnproof: C:/Users/Admin/projects/returnproof
 
 model:
-  default: deepseek-coder:6.7b      # specialist + CE + PA turns (sequential only)
-  lightweight: qwen3:0.6b           # smoke tests, cheap classification turns
+  default: deepseek-coder:6.7b          # specialist + CE + PA turns (sequential only)
+  lightweight: qwen3:0.6b-q4_K_M        # smoke tests, cheap classification turns
 
 limits:
   max_steps_per_run: 30

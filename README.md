@@ -12,7 +12,7 @@ gates, and a persistent task ledger. The first product it builds is
 |---|---|---|
 | F-000 | Scaffold, config, role grants, permission engine + security tests | **implemented, gates green** |
 | F-001 | Persistent task ledger + state machine | **implemented, gates green** |
-| F-002 | Model adapters (Ollama, FakeModel) + agent runtime | not started |
+| F-002 | Model adapters (Ollama, FakeModel) + agent runtime | **implemented, gates green, live round-trip verified** |
 | F-003 | Review gates + CLI | not started |
 | F-004 | Prompt Architect runtime | not started |
 | F-005 | Chief Engineer runtime | not started |
