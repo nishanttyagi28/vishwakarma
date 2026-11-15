@@ -179,5 +179,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     if DEMO.exists():
-        shutil.rmtree(DEMO)  # deterministic demo: fresh workspace each run
+        # deterministic re-run: clear build artifacts, keep SPEC/forge.yaml/.git
+        for name in ("greet.py", "test_greet.py", "forge-demo.sqlite3",
+                     "forge-prompts.sqlite3", "forge-journal.sqlite3"):
+            p = DEMO / name
+            if p.exists():
+                p.unlink()
+        for d in ("runs", "__pycache__"):
+            shutil.rmtree(DEMO / d, ignore_errors=True)
     sys.exit(main())
