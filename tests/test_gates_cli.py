@@ -222,3 +222,28 @@ def test_cli_show_and_history(cli_env):
     execute(["task", "promote", "T-1"], config_path, db_path)
     history = execute(["task", "history", "T-1"], config_path, db_path)
     assert "BACKLOG -> READY" in history
+
+
+def test_cli_env_overrides_select_config_and_db(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from forge import cli as cli_mod
+
+    cfg = tmp_path / "forge.yaml"
+    cfg.write_text(yaml.safe_dump({
+        "org": "T", "version": "0.0.0", "workspaces": {},
+        "model": {"default": "m", "lightweight": "m"},
+        "limits": {"max_steps_per_run": 3, "max_revisions_per_task": 1,
+                   "max_retries_per_run": 1},
+        "gates": {},
+    }), encoding="utf-8")
+    db = tmp_path / "other.sqlite3"
+    monkeypatch.setenv("FORGE_CONFIG", str(cfg))
+    monkeypatch.setenv("FORGE_DB", str(db))
+    monkeypatch.setattr(sys, "argv",
+                        ["forge.cli", "task", "create", "--id", "E-1",
+                         "--title", "t", "--role", "backend"])
+    cli_mod.main()
+    out = capsys.readouterr().out
+    assert "created E-1" in out
+    assert db.exists()  # the env-selected ledger received the write

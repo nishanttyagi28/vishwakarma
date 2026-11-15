@@ -328,8 +328,12 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
 
 
 def main() -> None:
+    import os
+
+    config_path = Path(os.environ.get("FORGE_CONFIG", str(DEFAULT_CONFIG)))
+    db_path = Path(os.environ.get("FORGE_DB", str(DEFAULT_DB)))
     try:
-        text = execute(sys.argv[1:], DEFAULT_CONFIG, DEFAULT_DB)
+        text = execute(sys.argv[1:], config_path, db_path)
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
