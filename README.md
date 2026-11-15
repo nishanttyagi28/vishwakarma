@@ -18,6 +18,7 @@ gates, and a persistent task ledger. The first product it builds is
 | F-005 | Chief Engineer runtime | **implemented, gates green, autonomous mission verified** |
 | F-006 | Recovery + resumable execution | **implemented, gates green, live drill verified** |
 | F-007 | Mission acceptance suite + opt-in live smoke | **implemented, gates green; deterministic FakeModel missions verified; live Ollama smoke is manual-only (opt-in) after Founder halted it — laptop RAM** |
+| P-001 | Forge Trace: handoff logging & observability | **implemented, gates green; append-only handoff chain in ledger, secret-redacted, `forge trace show/failed` CLI, full-chain reconstruction tests** |
 
 ## Layout
 

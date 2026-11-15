@@ -134,6 +134,11 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
     p_grun.add_argument("--timeout", type=float, default=900.0)
 
     sub.add_parser("status")
+    trace = sub.add_parser("trace")
+    tsub2 = trace.add_subparsers(dest="trcmd", required=True)
+    p_tshow = tsub2.add_parser("show")
+    p_tshow.add_argument("task_id")
+    tsub2.add_parser("failed")
 
     p_recover = sub.add_parser("recover")
     p_recover.add_argument("--revert", action="store_true",
@@ -238,6 +243,29 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
             for state in (BACKLOG, READY, IN_PROGRESS, REVIEW, TESTING,
                           CHANGES_REQUESTED, APPROVED, BLOCKED_HUMAN, CANCELLED):
                 _print(out, f"{state}: {counts.get(state, 0)}")
+        elif args.cmd == "trace":
+            if args.trcmd == "show":
+                for h in ledger.handoffs_for(args.task_id):
+                    detail = ""
+                    if h.detail:
+                        detail = " " + json.dumps(h.detail, ensure_ascii=False)[:160]
+                    _print(out,
+                           f"[{h.seq}] {h.at} {h.id} {h.sender}->{h.receiver} "
+                           f"{h.kind} status={h.status} verified={h.verified} "
+                           f"model={h.model} prompt={h.prompt_id}v{h.prompt_version} "
+                           f"refs={h.context_refs}{detail}")
+                for tr in ledger.history(args.task_id):
+                    _print(out, f"  state: {tr.at} {tr.from_status}->{tr.to_status} "
+                                f"by {tr.actor}: {tr.reason}")
+            else:
+                hs = ledger.failed_handoffs()
+                if not hs:
+                    _print(out, "no failed or blocked handoffs")
+                for h in hs:
+                    _print(out,
+                           f"[{h.seq}] {h.at} {h.task_id} {h.id} "
+                           f"{h.sender}->{h.receiver} {h.kind} "
+                           f"status={h.status} detail={h.detail}")
         elif args.cmd == "chief":
             from forge.chief import ChiefEngineer
             from forge.journal import DecisionJournal

@@ -43,15 +43,15 @@ def build_grants():
 
 
 def pa_script():
-    search = json.dumps({"thought": "search", "action": {
-        "tool": "repo.search", "args": {"keywords": ["feat"]}}})
-    final = json.dumps({"thought": "curated", "final": {
-        "summary": "curated", "files_changed": [], "tests_run": [],
-        "self_assessment": "ok", "open_issues": [],
-        "artifacts": {"context_selected": [f"{WS}:docs/SPEC.md"],
-                      "instructions": "implement add in src/calc.py",
-                      "uncertainties": [], "conflicts": []}}})
-    return [search, final]
+    # ADR-0004: PA curation is single-shot structured judgement - one JSON
+    # object, no ReAct wrapper. (The old ReAct-shaped script made the
+    # single-shot parser silently produce an EMPTY context: a boundary bug
+    # Forge Trace P-001 exposed via the dispatch handoff's context_refs.)
+    return [json.dumps({
+        "context_selected": [f"{WS}:docs/SPEC.md"],
+        "instructions": "implement add in src/calc.py",
+        "uncertainties": [], "conflicts": [],
+    })]
 
 
 def specialist_script():

@@ -83,6 +83,8 @@ def test_failure_unblock_recovery_success_cycle(env):
     assert ledger.status_of("S-3") == READY
     assert ledger.get("S-3").retries_used == 1
 
+    # fresh scripts for the retry (the first run consumed the old ones)
+    models["prompt_architect"] = FakeModel(pa_script())
     models["backend"] = FakeModel(specialist_script())
     models["qa"] = FakeModel(reviewer_script("CLEAN"))
     outcomes = chief.run_roadmap(Roadmap(tasks=[TaskSpec(

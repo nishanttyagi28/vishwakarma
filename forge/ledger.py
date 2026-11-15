@@ -1,10 +1,13 @@
 """Persistent task ledger for VISHWAKARMA.
 
-SQLite-backed. Three tables:
+SQLite-backed. Four tables:
 
 - ``tasks``         current task state, dependency lists, retry counters
 - ``transitions``   append-only audit of every state change (who, why, when)
 - ``gate_results``  hash-stamped gate payloads; written once, never updated
+- ``handoffs``      append-only Forge Trace: every agent-to-agent boundary
+                    event (sender, receiver, context, model, outcome,
+                    verification). Written once, never updated.
 
 The state machine is enforced here, not by agent judgement: an illegal
 transition raises ``LedgerError``. Task claiming is atomic via a conditional
@@ -16,6 +19,7 @@ approved by the ``founder`` actor.
 
 import json
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -102,6 +106,39 @@ class GateResult(BaseModel):
     at: str
 
 
+#: handoff kinds (Forge Trace, P-001)
+KIND_DISPATCH = "dispatch"  # sender hands work to a receiver agent
+KIND_REPORT = "report"  # receiver returned an implementation report
+KIND_VERDICT = "verdict"  # reviewer returned a verdict
+KIND_GATES = "gates"  # trusted gate runner result
+KIND_FAILURE = "failure"  # receiver produced no valid result
+KIND_RETRY = "retry"  # bounded retry after issues
+KIND_BLOCK = "block"  # escalation to a human
+
+HANDOFF_STATUSES = {"completed", "failed", "blocked", "pending"}
+
+
+class HandoffRecord(BaseModel):
+    """One agent-to-agent boundary event (Forge Trace)."""
+
+    seq: int
+    id: str
+    task_id: str
+    parent_id: str | None
+    sender: str
+    receiver: str
+    kind: str
+    objective: str = ""
+    prompt_id: str = ""
+    prompt_version: int = 0
+    context_refs: list[str] = Field(default_factory=list)
+    model: str = ""
+    status: str = "completed"
+    verified: bool = False
+    detail: dict[str, object] = Field(default_factory=dict)
+    at: str = ""
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -147,6 +184,30 @@ BEGIN SELECT RAISE(ABORT, 'gate_results are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS gate_results_no_delete
 BEFORE DELETE ON gate_results
 BEGIN SELECT RAISE(ABORT, 'gate_results are append-only'); END;
+CREATE TABLE IF NOT EXISTS handoffs (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  task_id TEXT NOT NULL,
+  parent_id TEXT,
+  sender TEXT NOT NULL,
+  receiver TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  objective TEXT NOT NULL DEFAULT '',
+  prompt_id TEXT NOT NULL DEFAULT '',
+  prompt_version INTEGER NOT NULL DEFAULT 0,
+  context_refs TEXT NOT NULL DEFAULT '[]',
+  model TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  verified INTEGER NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT '{}',
+  at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS handoffs_no_update
+BEFORE UPDATE ON handoffs
+BEGIN SELECT RAISE(ABORT, 'handoffs are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS handoffs_no_delete
+BEFORE DELETE ON handoffs
+BEGIN SELECT RAISE(ABORT, 'handoffs are append-only'); END;
 """
 
 
@@ -432,3 +493,103 @@ class TaskLedger:
             )
             for r in rows
         ]
+
+    # --- Forge Trace (P-001): agent-to-agent boundary events -----------------
+
+    def record_handoff(
+        self,
+        task_id: str,
+        *,
+        sender: str,
+        receiver: str,
+        kind: str,
+        parent_id: str | None = None,
+        objective: str = "",
+        prompt_id: str = "",
+        prompt_version: int = 0,
+        context_refs: list[str] | None = None,
+        model: str = "",
+        status: str = "completed",
+        verified: bool = False,
+        detail: dict[str, object] | None = None,
+    ) -> str:
+        """Append one handoff record; returns its id.
+
+        Objective and detail are secret-redacted before persistence. A
+        handoff is never self-declared verified: callers may only pass
+        ``verified=True`` when an actual verification result (gates and
+        independent review) backs it.
+        """
+        from .prompting.secrets import redact_text  # lazy: avoids import cycle
+        if kind not in {
+            KIND_DISPATCH, KIND_REPORT, KIND_VERDICT, KIND_GATES,
+            KIND_FAILURE, KIND_RETRY, KIND_BLOCK,
+        }:
+            raise LedgerError(f"unknown handoff kind: {kind!r}")
+        if status not in HANDOFF_STATUSES:
+            raise LedgerError(f"unknown handoff status: {status!r}")
+        if parent_id is not None:
+            hit = self._conn.execute(
+                "SELECT 1 FROM handoffs WHERE id = ? AND task_id = ?",
+                (parent_id, task_id),
+            ).fetchone()
+            if hit is None:
+                raise LedgerError(f"parent handoff {parent_id!r} not in this task")
+        hid = f"h-{uuid.uuid4().hex[:12]}"
+        blob = json.dumps(detail or {}, sort_keys=True)
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO handoffs (id, task_id, parent_id, sender, receiver, "
+                "kind, objective, prompt_id, prompt_version, context_refs, model, "
+                "status, verified, detail, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    hid, task_id, parent_id, sender, receiver, kind,
+                    redact_text(objective), prompt_id, prompt_version,
+                    json.dumps(context_refs or []), model, status,
+                    int(verified), redact_text(blob), _now(),
+                ),
+            )
+        return hid
+
+    def handoffs_for(self, task_id: str) -> list[HandoffRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM handoffs WHERE task_id = ? ORDER BY seq", (task_id,)
+        ).fetchall()
+        return [_handoff_from_row(r) for r in rows]
+
+    def failed_handoffs(self) -> list[HandoffRecord]:
+        """All failed or blocked handoffs across tasks, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM handoffs WHERE status IN ('failed','blocked') "
+            "ORDER BY seq DESC"
+        ).fetchall()
+        return [_handoff_from_row(r) for r in rows]
+
+    def get_handoff(self, hid: str) -> HandoffRecord:
+        row = self._conn.execute(
+            "SELECT * FROM handoffs WHERE id = ?", (hid,)
+        ).fetchone()
+        if row is None:
+            raise LedgerError(f"unknown handoff: {hid!r}")
+        return _handoff_from_row(row)
+
+
+def _handoff_from_row(r: sqlite3.Row) -> HandoffRecord:
+    return HandoffRecord(
+        seq=r["seq"],
+        id=r["id"],
+        task_id=r["task_id"],
+        parent_id=r["parent_id"],
+        sender=r["sender"],
+        receiver=r["receiver"],
+        kind=r["kind"],
+        objective=r["objective"],
+        prompt_id=r["prompt_id"],
+        prompt_version=r["prompt_version"],
+        context_refs=json.loads(r["context_refs"]),
+        model=r["model"],
+        status=r["status"],
+        verified=bool(r["verified"]),
+        detail=json.loads(r["detail"]),
+        at=r["at"],
+    )
