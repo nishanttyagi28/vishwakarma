@@ -21,6 +21,9 @@ include = ["forge*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: opt-in live Ollama smoke tests (set FORGE_LIVE_SMOKE=1 to enable)",
+]
 addopts = "-q"
 
 [tool.ruff]
@@ -35,3 +38,7 @@ python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 disallow_untyped_defs = false
+
+[tool.ruff.lint.per-file-ignores]
+# pytest fixture parameters intentionally shadow the imported `env` fixture
+"tests/test_smoke_mission.py" = ["F811"]

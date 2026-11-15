@@ -46,11 +46,13 @@ roles:
       write:
         - "vishwakarma:forge/**"
         - "vishwakarma:tests/**"
+        - "vishwakarma:fixtures/**"
         - "returnproof:backend/**"
         - "returnproof:tests/**"
         - "returnproof:alembic/**"
     shell_allow:
-      ["pytest", "ruff check", "ruff format", "mypy", "python -m", "alembic",
+      ["pytest", "ruff check", "ruff format", "mypy", "python -m", "python -c",
+       "python", ".venv/Scripts/python.exe", "alembic",
        "git status", "git diff", "git add", "git commit", "git log"]
     tools: [fs, shell, ledger.read]
 

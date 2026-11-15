@@ -41,11 +41,31 @@ class ToolExecutor:
         role: str,
         shell_timeout_s: float = 120.0,
         named_tools: dict[str, Callable[[dict[str, object]], ToolResult]] | None = None,
+        default_workspace: str | None = None,
     ) -> None:
         self.checker = checker
         self.role = role
         self.shell_timeout_s = shell_timeout_s
         self.named_tools = named_tools or {}
+        self.default_workspace = default_workspace
+
+    @property
+    def tool_names(self) -> list[str]:
+        base = ["fs.read", "fs.write", "fs.list", "shell.run"]
+        return base + sorted(self.named_tools)
+
+    def _resolve(self, spec: str) -> str:
+        """Normalise a path spec, defaulting prefix-less paths to the task's
+        workspace. Errors teach the exact expected format with an example."""
+        spec = spec.strip()
+        if ":" in spec:
+            return spec
+        if self.default_workspace:
+            return f"{self.default_workspace}:{spec}"
+        raise ValueError(
+            "path spec must be 'workspace:relative/path' - for example "
+            f"'{self.default_workspace or 'proj'}:src/main.py' - got {spec!r}"
+        )
 
     def execute(self, tool: str, args: dict[str, object]) -> ToolResult:
         try:
@@ -60,14 +80,19 @@ class ToolExecutor:
                 return self._fs_list(args)
             if tool == "shell.run":
                 return self._shell_run(args)
-            return ToolResult(False, f"unknown tool {tool!r}")
+            return ToolResult(
+                False,
+                f"unknown tool {tool!r}; available tools: {', '.join(self.tool_names)}",
+            )
         except PermissionDenied as exc:
             return ToolResult(False, f"PERMISSION_DENIED: {exc}", denied=True)
-
+        except (ValueError, OSError) as exc:
+            # invalid arguments are observations for the agent, not crashes
+            return ToolResult(False, f"TOOL_ERROR: {exc}")
     # --- tools ---------------------------------------------------------------
 
     def _fs_read(self, args: dict[str, object]) -> ToolResult:
-        spec = str(args.get("path", ""))
+        spec = self._resolve(str(args.get("path", "")))
         path = self.checker.check_fs(self.role, "read", spec)
         if not path.is_file():
             return ToolResult(False, f"not a file: {spec}")
@@ -75,7 +100,7 @@ class ToolExecutor:
         return ToolResult(True, _truncate(text))
 
     def _fs_write(self, args: dict[str, object]) -> ToolResult:
-        spec = str(args.get("path", ""))
+        spec = self._resolve(str(args.get("path", "")))
         content = str(args.get("content", ""))
         path = self.checker.check_fs(self.role, "write", spec)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +108,7 @@ class ToolExecutor:
         return ToolResult(True, f"wrote {len(content)} chars to {spec}")
 
     def _fs_list(self, args: dict[str, object]) -> ToolResult:
-        spec = str(args.get("path", ""))
+        spec = self._resolve(str(args.get("path", "")))
         path = self.checker.check_fs(self.role, "read", spec)
         if not path.is_dir():
             return ToolResult(False, f"not a directory: {spec}")

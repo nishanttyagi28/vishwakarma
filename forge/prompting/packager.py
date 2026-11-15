@@ -71,9 +71,14 @@ def assemble(
     prompt_id: str = "",
     prompt_version: int = 0,
     token_cap: int = 12000,
+    gate_workspaces: list[str] | None = None,
 ) -> TaskPackage:
     """Build and validate the package. Deterministic facts come from code."""
-    gate_commands = [g.command for ws in config.gates.values() for g in ws]
+    gate_commands = [
+        g.command for name, ws_gates in config.gates.items()
+        if gate_workspaces is None or name in gate_workspaces
+        for g in ws_gates
+    ]
     try:
         grants_snapshot = expected_grants(checker, task.assignee_role)
     except Exception as exc:
@@ -110,7 +115,8 @@ def assemble(
     package.estimated_tokens = estimate_tokens(
         package.model_dump_json() + _excerpts_total(package, checker)
     )
-    validate_package(package, task, checker, config, token_cap)
+    validate_package(package, task, checker, config, token_cap,
+                     gate_workspaces=gate_workspaces)
     return package
 
 

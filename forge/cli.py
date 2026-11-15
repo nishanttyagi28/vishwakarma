@@ -35,6 +35,7 @@ from forge.ledger import (
     TESTING,
     TaskLedger,
 )
+from forge.permissions import PermissionChecker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "forge.yaml"
@@ -112,6 +113,11 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
     p_cancel.add_argument("--actor", required=True)
     p_cancel.add_argument("--reason", required=True)
 
+    p_unblock = tsub.add_parser("unblock")
+    p_unblock.add_argument("task_id")
+    p_unblock.add_argument("--actor", required=True)
+    p_unblock.add_argument("--reason", required=True)
+
     p_approve = tsub.add_parser("approve")
     p_approve.add_argument("task_id")
     p_approve.add_argument("--actor", required=True)
@@ -132,6 +138,12 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
     p_recover = sub.add_parser("recover")
     p_recover.add_argument("--revert", action="store_true",
                            help="human-invoked: restore uncommitted files from git HEAD")
+
+    chief = sub.add_parser("chief")
+    csub = chief.add_subparsers(dest="ccmd", required=True)
+    p_crun = csub.add_parser("run")
+    p_crun.add_argument("--task", required=True)
+    csub.add_parser("report")
 
     args = parser.parse_args(argv)
     config = load_config(config_path)
@@ -180,6 +192,9 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
             elif args.tcmd == "cancel":
                 record = ledger.cancel(args.task_id, args.actor, args.reason)
                 _print(out, f"{record.id} -> CANCELLED")
+            elif args.tcmd == "unblock":
+                record = ledger.unblock(args.task_id, args.actor, args.reason)
+                _print(out, f"{record.id} -> READY (unblocked for retry)")
             elif args.tcmd == "approve":
                 if args.actor not in ("chief", FOUNDER):
                     raise ValueError("approve actor must be chief or founder")
@@ -223,6 +238,45 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
             for state in (BACKLOG, READY, IN_PROGRESS, REVIEW, TESTING,
                           CHANGES_REQUESTED, APPROVED, BLOCKED_HUMAN, CANCELLED):
                 _print(out, f"{state}: {counts.get(state, 0)}")
+        elif args.cmd == "chief":
+            from forge.chief import ChiefEngineer
+            from forge.journal import DecisionJournal
+            from forge.model.base import ModelBackend
+            from forge.model.ollama_backend import OllamaBackend
+            from forge.permissions import load_roles
+            from forge.prompting import PromptRegistry
+
+            grants = load_roles(config_path.parent / "forge" / "roles.yaml")
+            checker = PermissionChecker(grants, config.workspaces)
+            ledger = TaskLedger(db_path, max_revisions=config.limits.max_revisions_per_task)
+            registry = PromptRegistry(
+                config_path.parent / "forge-prompts.sqlite3",
+                max_revisions=config.limits.max_revisions_per_task,
+            )
+            journal = DecisionJournal(config_path.parent / "decisions.sqlite3")
+            try:
+                backend_model = OllamaBackend(
+                    model=config.model.default,
+                    timeout_s=float(config.limits.max_steps_per_run * 60),
+                )
+                models: dict[str, ModelBackend] = {
+                    role: backend_model for role in grants
+                }
+                chief_eng = ChiefEngineer(
+                    config, ledger, registry, journal, checker, models,
+                    transcript_dir=config_path.parent / "runs",
+                    max_steps_per_run=config.limits.max_steps_per_run,
+                )
+                if args.ccmd == "run":
+                    outcome = chief_eng.execute_task(args.task)
+                    _print(out, f"{outcome.task_id} -> {outcome.status} "
+                                f"[{outcome.outcome_class or '-'}] {outcome.detail}")
+                else:
+                    _print(out, chief_eng.daily_report())
+            finally:
+                ledger.close()
+                registry.close()
+                journal.close()
     finally:
         ledger.close()
     return "\n".join(out)

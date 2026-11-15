@@ -34,7 +34,7 @@ from forge.ledger import (
     TaskLedger,
     TaskRecord,
 )
-from forge.model.base import ModelBackend
+from forge.model.base import Message, ModelBackend
 from forge.permissions import PermissionChecker
 from forge.prompting import (
     APPROVED_FIRST_PASS,
@@ -45,7 +45,6 @@ from forge.prompting import (
     PromptRegistry,
     assemble,
     gather_candidates,
-    pa_brief,
     render,
 )
 from forge.prompting import (
@@ -53,7 +52,7 @@ from forge.prompting import (
 )
 from forge.prompting.package import TaskPackage, package_hash
 from forge.runtime.agent import COMPLETED, AgentRuntime, RunResult
-from forge.runtime.tools import ToolExecutor, ToolResult
+from forge.runtime.tools import ToolExecutor
 
 
 def _now() -> str:
@@ -118,45 +117,102 @@ class ChiefEngineer:
         self.max_steps = max_steps_per_run
 
     # --- PA pipeline ----------------------------------------------------------
+    # ADR-0004: PA curation is single-shot structured judgement, not a ReAct
+    # loop. The 6.7B local model adheres to one-shot JSON schemas far more
+    # reliably than to multi-turn tool protocols, and curation needs no tools:
+    # candidates are gathered deterministically. Specialists and reviewers keep
+    # the bounded loop because they act with tools.
+
+    def _single_shot_json(self, model: ModelBackend, prompt: str,
+                          attempts: int = 3) -> dict[str, object]:
+        """One-shot structured judgement: ask, validate, retry with the error."""
+        messages: list[Message] = [
+            {"role": "system",
+             "content": "You reply with exactly one JSON object and no other text."},
+            {"role": "user", "content": prompt},
+        ]
+        last_error = ""
+        for _ in range(attempts):
+            raw = model.chat(messages, json_mode=True)
+            try:
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    raise ValueError("reply is not a JSON object")
+                return data
+            except ValueError as exc:
+                last_error = str(exc)
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": f"Invalid reply ({last_error}). Reply again with "
+                               "exactly the required JSON object and no other text.",
+                })
+        raise RuntimeError(f"structured reply failed after {attempts} attempts: {last_error}")
 
     def prepare_package(self, task: TaskRecord) -> tuple[TaskPackage, RunResult]:
         candidates = gather_candidates(task, self.config)
-        pa_role = "prompt_architect"
-        grant = self.checker.grants[pa_role]
-        named = {"repo.search": self._repo_search_tool()}
-        tools = ToolExecutor(self.checker, pa_role, named_tools=named)
-        agent = AgentRuntime(
-            model=self.models[pa_role],
-            tools=tools,
-            role=pa_role,
-            mission=grant.mission,
-            max_steps=self.max_steps,
-            transcript_dir=self.transcript_dir,
+        directive = (
+            f"Task {task.id} for the {task.assignee_role} agent.\n"
+            f"Objective: {task.title}\n"
+            f"Scope: {task.scope or '-'}\nExclusions: {task.exclusions or '-'}\n"
+            "Candidate files (deterministic retrieval):\n"
+            + "\n".join(f"- {c}" for c in candidates or ["(none)"])
+            + "\n\nUse ONLY exact paths from the candidate list above; never invent "
+            "paths. Select the minimum sufficient context. Reply with ONE JSON object:\n"
+            '{"context_selected": ["workspace:path", ...], "instructions": "...", '
+            '"uncertainties": ["..."], "conflicts": ["..."]}'
         )
-        result = agent.run(f"pa-{task.id}-{_tag()}", pa_brief(task, candidates))
-        if result.status != COMPLETED or result.report is None:
-            raise RuntimeError(f"PA run failed: {result.status} {result.failure_reason}")
-        artifacts = result.report.artifacts
-        raw_ctx = artifacts.get("context_selected", [])
-        unc = artifacts.get("uncertainties", [])
-        conf = artifacts.get("conflicts", [])
-        curation = Curation(
-            context_selected=[str(p) for p in raw_ctx] if isinstance(raw_ctx, list) else [],
-            instructions=str(artifacts.get("instructions", "")),
-            uncertainties=[str(u) for u in unc] if isinstance(unc, list) else [],
-            conflicts=[str(c) for c in conf] if isinstance(conf, list) else [],
-        )
-        prompt_id = f"p-{task.id}"
-        package = assemble(
-            task, curation, self.checker, self.config, f"pkg-{task.id}",
-            prompt_id=prompt_id, prompt_version=0, token_cap=self.token_cap,
-        )
-        version = self._register_prompt(prompt_id, package, task)
-        package.prompt_version = version
-        validate_again = package.model_copy(update={"prompt_version": version})
-        return validate_again, result
+        # prompt identity includes the task attempt: retries are governed by
+        # the ledger's retry budget, while the registry's revision budget
+        # guards within-attempt prompt optimisation only.
+        attempt_no = task.retries_used
+        prompt_id = f"p-{task.id}" if attempt_no == 0 else f"p-{task.id}-r{attempt_no}"
+        feedback = ""
+        for correction in range(2):
+            data = self._single_shot_json(self.models["prompt_architect"],
+                                          directive + feedback)
+            raw_ctx = data.get("context_selected", [])
+            unc = data.get("uncertainties", [])
+            conf = data.get("conflicts", [])
+            curation = Curation(
+                context_selected=[str(p) for p in raw_ctx]
+                if isinstance(raw_ctx, list) else [],
+                instructions=str(data.get("instructions", "")),
+                uncertainties=[str(u) for u in unc]
+                if isinstance(unc, list) else [],
+                conflicts=[str(c) for c in conf]
+                if isinstance(conf, list) else [],
+            )
+            try:
+                gate_workspaces = (
+                    sorted({p.split(":", 1)[0] for p in curation.context_selected
+                            if ":" in p})
+                    or None
+                )
+                package = assemble(
+                    task, curation, self.checker, self.config, f"pkg-{task.id}",
+                    prompt_id=prompt_id, prompt_version=0, token_cap=self.token_cap,
+                    gate_workspaces=gate_workspaces,
+                )
+            except PackageValidationError as exc:
+                feedback = (
+                    "\n\nYour previous reply FAILED deterministic validation:\n"
+                    + "\n".join(f"- {e}" for e in exc.errors)
+                    + "\nFix context_selected using EXACT candidate paths from the "
+                    "list above. Reply with the corrected ONE JSON object."
+                )
+                continue
+            version = self._register_prompt(prompt_id, package, task)
+            package = package.model_copy(update={"prompt_version": version})
+            return package, RunResult(
+                run_id=f"pa-{task.id}-{_tag()}", role="prompt_architect",
+                status=COMPLETED, report=None, steps_used=correction + 1,
+                transcript_path="",
+            )
+        raise RuntimeError("package validation failed after PA correction attempt")
 
-    def _register_prompt(self, prompt_id: str, package, task: TaskRecord) -> int:
+    def _register_prompt(self, prompt_id: str, package: TaskPackage,
+                         task: TaskRecord) -> int:
         version = self.registry.register(
             prompt_id, task.assignee_role, "implementation", package_hash(package)
         )
@@ -164,26 +220,20 @@ class ChiefEngineer:
             self.registry.supersede(prompt_id, version - 1, version)
         return version
 
-    def _repo_search_tool(self):
-        from forge.prompting.retrieval import search_workspace
-
-        def _search(args: dict[str, object]) -> ToolResult:
-            raw_keywords = args.get("keywords", [])
-            keywords = [str(k) for k in raw_keywords] if isinstance(raw_keywords, list) else []
-            lines = []
-            for ws_name, root in self.config.workspaces.items():
-                for rel, score in search_workspace(Path(root), keywords):
-                    lines.append(f"{ws_name}:{rel} (score {score})")
-            return ToolResult(True, "\n".join(lines) or "(no matches)")
-
-        return _search
-
     # --- specialist and reviewer runs -----------------------------------------
 
-    def _run_specialist(self, task: TaskRecord, context: str, run_id: str,
+    def _default_workspace(self, package: TaskPackage) -> str | None:
+        prefixes = [cf.path.split(":", 1)[0] for cf in package.context_files
+                    if ":" in cf.path]
+        if not prefixes:
+            return None
+        return max(set(prefixes), key=prefixes.count)
+
+    def _run_specialist(self, task: TaskRecord, package: TaskPackage, run_id: str,
                         feedback: str = "") -> RunResult:
         role = task.assignee_role
-        tools = ToolExecutor(self.checker, role)
+        tools = ToolExecutor(self.checker, role,
+                             default_workspace=self._default_workspace(package))
         agent = AgentRuntime(
             model=self.models[role],
             tools=tools,
@@ -195,29 +245,34 @@ class ChiefEngineer:
         feedback_block = ""
         if feedback:
             feedback_block = "\n\nREVIEW FEEDBACK (address exactly these):\n" + feedback
-        full_context = context + feedback_block
-        return agent.run(run_id, full_context)
 
-    def _run_reviewer(self, task: TaskRecord, package, specialist: RunResult,
+        context = render(package, self.checker) + feedback_block
+        return agent.run(run_id, context)
+
+    def _run_reviewer(self, task: TaskRecord, specialist: RunResult,
                       gates: GatesReport, run_id: str) -> RunResult:
         role = self.reviewer_role
         tools = ToolExecutor(self.checker, role)
+        files = specialist.report.files_changed if specialist.report else []
         agent = AgentRuntime(
             model=self.models[role],
             tools=tools,
             role=role,
             mission=self.checker.grants[role].mission,
-            max_steps=self.max_steps,
+            max_steps=min(self.max_steps, 8),
             transcript_dir=self.transcript_dir,
         )
         context = (
             f"INDEPENDENT REVIEW of task {task.id}\n"
             f"Objective: {task.title}\n"
-            f"Specialist report: "
-            f"{specialist.report.model_dump_json() if specialist.report else 'none'}\n"
             f"Gate summary:\n{gates.summary()}\n"
-            "Read the changed files with fs.read if needed. Reply per protocol; "
-            "in your final report set artifacts: {verdict: CLEAN|ISSUES, findings: [...]}."
+            "The specialist reported changing exactly these files:\n"
+            + ("\n".join(f"- {f}" for f in files) or "- (none declared)")
+            + "\n\nRead EXACTLY these files with fs.read (using their full "
+            "'workspace:path' form) and verify the work. Do not read anything "
+            "else. If a declared file cannot be read, that is itself a finding.\n"
+            "Reply per protocol; in your final report set artifacts: "
+            "{verdict: CLEAN|ISSUES, findings: [...]}."
         )
         return agent.run(run_id, context)
 
@@ -229,41 +284,41 @@ class ChiefEngineer:
             try:
                 self.ledger.promote(task_id)
             except LedgerError as exc:
-                return TaskOutcome(task_id=task_id, status=self.ledger.status_of(task_id),
+                return TaskOutcome(task_id=task_id,
+                                   status=self.ledger.status_of(task_id),
                                    detail=f"cannot promote: {exc}")
-        if self.ledger.status_of(task_id) in (BLOCKED_HUMAN, APPROVED):
-            return TaskOutcome(task_id=task_id, status=self.ledger.status_of(task_id),
+        status = self.ledger.status_of(task_id)
+        if status in (BLOCKED_HUMAN, APPROVED):
+            return TaskOutcome(task_id=task_id, status=status,
                                detail="terminal state, skipped")
-        if self.ledger.status_of(task_id) == BACKLOG:
-            self.ledger.promote(task_id)
-        if self.ledger.status_of(task_id) == BACKLOG:
-            self.ledger.promote(task_id)
-        if self.ledger.status_of(task_id) != IN_PROGRESS:
+        if status != IN_PROGRESS:
             self.ledger.claim(task_id, f"chief-{_tag()}")
         task = self.ledger.get(task_id)
 
-        self.journal.record("dispatch", f"delegated {task_id} to {task.assignee_role} "
-                            f"via PA-prepared package", task_id=task_id)
+        self.journal.record("dispatch", f"delegated {task_id} to "
+                            f"{task.assignee_role} via PA-prepared package",
+                            task_id=task_id)
 
         try:
             package, _pa_result = self.prepare_package(task)
         except (RuntimeError, PackageValidationError) as exc:
-            out = self.ledger.escalate(task_id, "chief", f"package preparation failed: {exc}")
+            out = self.ledger.escalate(task_id, "chief",
+                                       f"package preparation failed: {exc}")
             self.journal.record("escalate", f"PA pipeline failed for {task_id}: {exc}",
                                 task_id=task_id)
             return TaskOutcome(task_id=task_id, status=out.status,
                                outcome_class=OUTCOME_BLOCKED, detail=str(exc))
 
-        context = render(package, self.checker)
         revision = 0
         while True:
             sp_result = self._run_specialist(
-                task, context, f"sp-{task_id}-{revision}-{_tag()}"
+                task, package, f"sp-{task_id}-{revision}-{_tag()}"
             )
             if sp_result.status != COMPLETED:
                 out = self.ledger.escalate(
                     task_id, "chief",
-                    f"specialist run failed: {sp_result.status} {sp_result.failure_reason}",
+                    f"specialist run failed: {sp_result.status} "
+                    f"{sp_result.failure_reason}",
                 )
                 self.journal.record("escalate", f"specialist failed on {task_id}",
                                     task_id=task_id)
@@ -276,12 +331,16 @@ class ChiefEngineer:
             self.ledger.submit_for_review(
                 task_id, task.assignee_role, sp_result.report.summary
             )
-            specs = [g for ws in self.config.gates.values() for g in ws]
+            gate_ws = sorted({
+                cf.path.split(":", 1)[0] for cf in package.context_files if ":" in cf.path
+            }) or list(self.config.gates)
+            specs = [g for name, ws_gates in self.config.gates.items()
+                     if name in gate_ws for g in ws_gates]
             gates = run_gates_for_task(
                 self.ledger, task_id, specs, self.config.workspaces
             )
             review = self._run_reviewer(
-                task, package, sp_result, gates, f"rv-{task_id}-{revision}-{_tag()}"
+                task, sp_result, gates, f"rv-{task_id}-{revision}-{_tag()}"
             )
             verdict = "ISSUES"
             findings: list[str] = []
@@ -294,7 +353,8 @@ class ChiefEngineer:
             if gates.passed and verdict == "CLEAN":
                 if task.human_gate:
                     self.journal.record(
-                        "human_gate", f"{task_id} passed gates+review; awaiting founder",
+                        "human_gate",
+                        f"{task_id} passed gates+review; awaiting founder",
                         task_id=task_id,
                     )
                     self.registry.record_outcome(
@@ -306,15 +366,14 @@ class ChiefEngineer:
                         outcome_class=OUTCOME_BLOCKED,
                         detail="human-gated: awaiting founder approval",
                     )
-                actor = "chief"
-                self.ledger.approve(task_id, actor, "gates green, review clean")
+                self.ledger.approve(task_id, "chief", "gates green, review clean")
                 outcome_class = (
                     APPROVED_FIRST_PASS if revision == 0
                     else (REVISED_ONCE if revision == 1 else REVISED_TWICE)
                 )
                 self.registry.record_outcome(
-                    package.prompt_id, package.prompt_version, f"chief-{task_id}",
-                    outcome_class,
+                    package.prompt_id, package.prompt_version,
+                    f"chief-{task_id}", outcome_class,
                 )
                 self.journal.record(
                     "approve", f"{task_id} APPROVED after {revision} revisions "

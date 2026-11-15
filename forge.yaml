@@ -7,6 +7,7 @@ version: 0.1.0
 workspaces:
   vishwakarma: C:/Users/Admin/projects/vishwakarma
   returnproof: C:/Users/Admin/projects/returnproof
+  smoke: C:/Users/Admin/projects/vishwakarma/fixtures/smoke
 
 model:
   default: deepseek-coder:6.7b          # specialist + CE + PA turns (sequential only)
@@ -31,3 +32,9 @@ gates:
     - name: mypy
       command: .venv/Scripts/python.exe -m mypy forge
       workspace: vishwakarma
+  smoke:
+    - name: solution-gate
+      command: >-
+        python -c "import solution; assert solution.add(2,3)==5;
+        assert solution.add(0,0)==0; print('gate-ok')"
+      workspace: smoke

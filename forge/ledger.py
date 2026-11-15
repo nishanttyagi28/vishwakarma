@@ -54,6 +54,7 @@ LEGAL_TRANSITIONS: set[tuple[str, str]] = {
     (IN_PROGRESS, BLOCKED_HUMAN),
     (REVIEW, BLOCKED_HUMAN),
     (TESTING, BLOCKED_HUMAN),
+    (BLOCKED_HUMAN, READY),  # governed unblock for retrying technical failures
 }
 
 #: transitions that additionally require every dependency to be APPROVED.
@@ -386,6 +387,19 @@ class TaskLedger:
 
     def cancel(self, task_id: str, actor: str, reason: str) -> TaskRecord:
         return self._transition(task_id, CANCELLED, actor, reason)
+
+    def unblock(self, task_id: str, actor: str, reason: str) -> TaskRecord:
+        """BLOCKED_HUMAN -> READY for a retry within the retry budget.
+
+        Counts as a retry: retries_used increments, mirroring crash recovery.
+        """
+        row = self._get_row(task_id)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE tasks SET retries_used = ?, updated_at = ? WHERE id = ?",
+                (row["retries_used"] + 1, _now(), task_id),
+            )
+        return self._transition(task_id, READY, actor, reason)
 
     # --- audit --------------------------------------------------------------
 

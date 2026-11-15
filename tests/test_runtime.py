@@ -258,3 +258,35 @@ def test_ollama_backend_bad_shape_raises_backend_error():
     backend = OllamaBackend(model="m", transport=httpx.MockTransport(handler))
     with pytest.raises(ModelBackendError):
         backend.chat([{"role": "user", "content": "hi"}])
+
+
+# --- default workspace normalisation (F-007 smoke finding) --------------------
+
+
+def test_prefixless_path_uses_default_workspace(tmp_path):
+    grant_ = grant()
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("fs.write", {"path": "src/hello.py", "content": "x=1"})
+    assert result.ok
+    assert "w:src/hello.py" in result.output  # observation states the resolved spec
+    assert (tmp_path / "src" / "hello.py").read_text() == "x=1"
+
+
+def test_prefixless_path_without_default_gives_teachable_error(tmp_path):
+    grant_ = grant()
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role)
+    result = tools.execute("fs.write", {"path": "src/hello.py", "content": "x=1"})
+    assert not result.ok
+    assert "workspace:relative/path" in result.output
+    assert "src/main.py" in result.output  # example included in the error
+    assert not (tmp_path / "src" / "hello.py").exists()
+
+
+def test_explicit_spec_still_wins(tmp_path):
+    grant_ = grant()
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("fs.write", {"path": f"{WS}:src/a.py", "content": "ok"})
+    assert result.ok

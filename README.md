@@ -17,7 +17,7 @@ gates, and a persistent task ledger. The first product it builds is
 | F-004 | Prompt Architect runtime | **implemented, gates green, E2E PA mission verified** |
 | F-005 | Chief Engineer runtime | **implemented, gates green, autonomous mission verified** |
 | F-006 | Recovery + resumable execution | **implemented, gates green, live drill verified** |
-| F-007 | Live smoke missions on Ollama | not started |
+| F-007 | Mission acceptance suite + opt-in live smoke | **implemented, gates green; deterministic FakeModel missions verified; live Ollama smoke is manual-only (opt-in) after Founder halted it — laptop RAM** |
 
 ## Layout
 

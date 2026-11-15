@@ -53,10 +53,13 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def build_system_prompt(role: str, mission: str) -> str:
+def build_system_prompt(role: str, mission: str, tool_names: list[str]) -> str:
+    tools_line = ", ".join(tool_names)
     return f"""You are the {role} agent inside VISHWAKARMA.
 
 Mission: {mission}
+
+You have EXACTLY these tools: {tools_line}. No other tools exist.
 
 Reply protocol — exactly ONE JSON object per turn, no other text:
 {{"thought": "<brief reasoning>", "action": {{"tool": "<tool>", "args": {{...}}}}}}
@@ -87,7 +90,7 @@ class AgentRuntime:
         self.model = model
         self.tools = tools
         self.role = role
-        self.system_prompt = build_system_prompt(role, mission)
+        self.system_prompt = build_system_prompt(role, mission, tools.tool_names)
         self.max_steps = max_steps
         self.transcript_dir = transcript_dir
         self.malformed_turns = 0

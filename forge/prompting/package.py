@@ -87,6 +87,7 @@ def validate_package(
     checker: PermissionChecker,
     config: ForgeConfig,
     token_cap: int,
+    gate_workspaces: list[str] | None = None,
 ) -> None:
     """Raise PackageValidationError listing every violated invariant."""
     errors: list[str] = []
@@ -133,8 +134,13 @@ def validate_package(
     if package.tool_grants != expected_grants(checker, package.target_role):
         errors.append("tool_grants do not match the role's declared grants")
 
-    # trusted gates must be part of the verification story
-    for ws_gates in config.gates.values():
+    # trusted gates must be part of the verification story (filtered by the
+    # workspaces the task actually touches)
+    relevant_gates = [
+        (name, ws_gates) for name, ws_gates in config.gates.items()
+        if gate_workspaces is None or name in gate_workspaces
+    ]
+    for _name, ws_gates in relevant_gates:
         for gate in ws_gates:
             if gate.command not in package.verification_commands:
                 errors.append(f"configured gate {gate.name!r} missing from verification_commands")
