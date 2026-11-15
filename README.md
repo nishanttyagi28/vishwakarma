@@ -19,6 +19,7 @@ gates, and a persistent task ledger. The first product it builds is
 | F-006 | Recovery + resumable execution | **implemented, gates green, live drill verified** |
 | F-007 | Mission acceptance suite + opt-in live smoke | **implemented, gates green; deterministic FakeModel missions verified; live Ollama smoke is manual-only (opt-in) after Founder halted it — laptop RAM** |
 | P-001 | Forge Trace: handoff logging & observability | **implemented, gates green; append-only handoff chain in ledger, secret-redacted, `forge trace show/failed` CLI, full-chain reconstruction tests** |
+| P-002 | Forge builds a demo project (FakeModel run) | **implemented, gates green; `scripts/demo_greet.py` — CE approves DEMO-1 first pass, pytest gate green, project runs; demo repo `C:/Users/Admin/projects/forge-demo-greet`** |
 
 ## Layout
 
