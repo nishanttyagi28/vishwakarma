@@ -83,7 +83,7 @@ QA_CLEAN = json.dumps({"thought": "verdict", "final": {
 
 
 def main() -> int:
-    from forge.chief import ChiefEngineer, Roadmap, TaskSpec
+    from forge.chief import ChiefEngineer
     from forge.config import load_config
     from forge.journal import DecisionJournal
     from forge.ledger import APPROVED, TaskLedger

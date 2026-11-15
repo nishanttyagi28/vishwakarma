@@ -43,3 +43,4 @@ disallow_untyped_defs = false
 # pytest fixture parameters intentionally shadow the imported `env` fixture
 "tests/test_smoke_mission.py" = ["F811"]
 "tests/test_trace.py" = ["F811"]
+"tests/test_webui.py" = ["F811"]

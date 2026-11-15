@@ -143,6 +143,10 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
     p_recover = sub.add_parser("recover")
     p_recover.add_argument("--revert", action="store_true",
                            help="human-invoked: restore uncommitted files from git HEAD")
+    p_ui = sub.add_parser("ui", help="read-only local dashboard (127.0.0.1)")
+    p_ui.add_argument("--port", type=int, default=8765)
+    p_ui.add_argument("--print", action="store_true",
+                      help="print the dashboard HTML instead of serving")
 
     chief = sub.add_parser("chief")
     csub = chief.add_subparsers(dest="ccmd", required=True)
@@ -266,6 +270,19 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
                            f"[{h.seq}] {h.at} {h.task_id} {h.id} "
                            f"{h.sender}->{h.receiver} {h.kind} "
                            f"status={h.status} detail={h.detail}")
+        elif args.cmd == "ui":
+            from forge.webui import DashboardServer, build_dashboard_html
+            if args.print:
+                _print(out, build_dashboard_html(ledger))
+            else:
+                server = DashboardServer(ledger, port=args.port)
+                _print(out, f"serving http://127.0.0.1:{server.port}/ (Ctrl+C stops)")
+                try:
+                    server.serve_forever()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    server.close()
         elif args.cmd == "chief":
             from forge.chief import ChiefEngineer
             from forge.journal import DecisionJournal
