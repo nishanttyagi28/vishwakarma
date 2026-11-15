@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+*.sqlite3
+forge.sqlite*
+.env
+state/
+runs/
+node_modules/

@@ -1,0 +1,18 @@
+# VISHWAKARMA runtime configuration.
+# Model assignment and budgets are engineering decisions recorded in the ledger.
+
+org: VISHWAKARMA
+version: 0.1.0
+
+workspaces:
+  vishwakarma: C:/Users/Admin/projects/vishwakarma
+  returnproof: C:/Users/Admin/projects/returnproof
+
+model:
+  default: deepseek-coder:6.7b      # specialist + CE + PA turns (sequential only)
+  lightweight: qwen3:0.6b           # smoke tests, cheap classification turns
+
+limits:
+  max_steps_per_run: 30
+  max_revisions_per_task: 2
+  max_retries_per_run: 2

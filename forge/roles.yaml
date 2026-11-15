@@ -1,0 +1,162 @@
+# VISHWAKARMA role grants — the single source of truth for agent permissions.
+# Enforced by forge/permissions.py before every tool call.
+# Changing this file is a governed decision: it requires a ledger record, and
+# expansion of a role's authority is human-escalated. Agents cannot edit this
+# file's effect: grants are validated against this copy at every dispatch.
+
+roles:
+  - role: chief
+    mission: >
+      Plans, prioritises and delegates work; coordinates reviews and gates;
+      decides approval after gates and independent review. Never writes
+      product source code directly; delegation is its only code path.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write: ["vishwakarma:docs/**", "vishwakarma:reports/**", "vishwakarma:roadmap.yaml"]
+    shell_allow: ["forge", "git status", "git log", "git diff", "pytest"]
+    tools: [ledger.command, gate.request, dispatch.request, report.write]
+
+  - role: software_architect
+    mission: >
+      Owns requirements analysis, domain modelling, ADRs and API contracts.
+      Writes documentation only; never product code.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write: ["vishwakarma:docs/**", "returnproof:docs/**"]
+    shell_allow: ["git status", "git diff"]
+    tools: [fs, ledger.read]
+
+  - role: prompt_architect
+    mission: >
+      Curates task context and drafts TaskPackages for specialist runs;
+      records prompt versions and outcomes. Cannot dispatch tasks, transition
+      task state, or grant permissions.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write: ["vishwakarma:forge/prompts/drafts/**"]
+    shell_allow: ["forge prompt"]
+    tools: [fs, repo.search, ledger.query, prompt.save]
+
+  - role: backend
+    mission: >
+      Implements Python backend and Forge runtime modules with tests and
+      migrations. Runs its own tests; approval is decided elsewhere.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "vishwakarma:forge/**"
+        - "vishwakarma:tests/**"
+        - "returnproof:backend/**"
+        - "returnproof:tests/**"
+        - "returnproof:alembic/**"
+    shell_allow:
+      ["pytest", "ruff check", "ruff format", "mypy", "python -m", "alembic",
+       "git status", "git diff", "git add", "git commit", "git log"]
+    tools: [fs, shell, ledger.read]
+
+  - role: frontend
+    mission: >
+      Implements the React/TypeScript frontend with components, validation,
+      loading and error states, and its own tests.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write: ["returnproof:frontend/**", "returnproof:docs/frontend/**"]
+    shell_allow:
+      ["npm run", "npm test", "npm ci", "npm install", "npx tsc", "npx eslint",
+       "npx vitest", "git status", "git diff", "git add", "git commit"]
+    tools: [fs, shell, ledger.read]
+
+  - role: data_engineer
+    mission: >
+      Implements CSV/XLSX ingestion, normalisation, deduplication and
+      reconciliation pipelines with idempotency and failure-rollback tests.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "returnproof:backend/app/data_pipeline/**"
+        - "returnproof:backend/tests/data_pipeline/**"
+        - "returnproof:backend/tests/fixtures/**"
+        - "returnproof:datasets/**"
+    shell_allow:
+      ["pytest", "python -m", "ruff check", "git status", "git diff", "git add", "git commit"]
+    tools: [fs, shell, ledger.read]
+
+  - role: ml_engineer
+    mission: >
+      Builds measurable baselines and evaluated models; documents precision,
+      recall and limitations. Never ships unevaluated models into prod paths.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "returnproof:ml/**"
+        - "returnproof:backend/app/analytics/**"
+        - "returnproof:backend/tests/analytics/**"
+    shell_allow:
+      ["pytest", "python -m", "git status", "git diff", "git add", "git commit"]
+    tools: [fs, shell, ledger.read]
+
+  - role: genai_engineer
+    mission: >
+      Builds evidence-grounded Ollama-backed assistance with structured
+      outputs, grounding checks and safe refusal. No paid APIs.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "returnproof:backend/app/ai/**"
+        - "returnproof:backend/tests/ai/**"
+        - "returnproof:evals/**"
+    shell_allow:
+      ["pytest", "python -m", "git status", "git diff", "git add", "git commit"]
+    tools: [fs, shell, ledger.read]
+
+  - role: qa
+    mission: >
+      Writes and runs test suites, boundary and failure cases; files defect
+      reports. Cannot modify product code — tests and QA docs only.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "vishwakarma:tests/**"
+        - "returnproof:backend/tests/**"
+        - "returnproof:frontend/tests/**"
+        - "vishwakarma:docs/qa/**"
+        - "returnproof:docs/qa/**"
+        - "returnproof:datasets/**"
+    shell_allow:
+      ["pytest", "npm test", "npx vitest", "npx playwright", "git status", "git diff"]
+    tools: [fs, shell, ledger.read, gate.request]
+
+  - role: security
+    mission: >
+      Reviews auth, tenant isolation, uploads and secrets; writes security
+      tests and audit findings. Read-only on product code.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "vishwakarma:tests/security/**"
+        - "returnproof:backend/tests/security/**"
+        - "vishwakarma:docs/security/**"
+        - "returnproof:docs/security/**"
+    shell_allow:
+      ["pytest", "ruff check", "pip-audit", "git status", "git diff"]
+    tools: [fs, shell, ledger.read, security.gate]
+
+  - role: devops
+    mission: >
+      Owns local environment scripts, CI configuration, logging, backups and
+      ops documentation. Environment setup, no business logic.
+    fs:
+      read: ["vishwakarma:", "returnproof:"]
+      write:
+        - "vishwakarma:.github/**"
+        - "vishwakarma:scripts/**"
+        - "vishwakarma:docs/ops/**"
+        - "vishwakarma:pyproject.toml"
+        - "vishwakarma:requirements.txt"
+        - "returnproof:.github/**"
+        - "returnproof:scripts/**"
+        - "returnproof:docs/ops/**"
+    shell_allow:
+      ["git status", "git log", "git add", "git commit", "git diff",
+       "python -m pip install", "python -m venv", "py -3.12", "pytest"]
+    tools: [fs, shell, ledger.read]
