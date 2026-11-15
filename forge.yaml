@@ -16,3 +16,18 @@ limits:
   max_steps_per_run: 30
   max_revisions_per_task: 2
   max_retries_per_run: 2
+
+# Trusted quality gates, executed by the gate runner (never by agents).
+# Commands run with cwd = the workspace root. Results are hash-stamped into
+# the ledger; agents can only read them.
+gates:
+  vishwakarma:
+    - name: pytest
+      command: .venv/Scripts/python.exe -m pytest -q
+      workspace: vishwakarma
+    - name: ruff
+      command: .venv/Scripts/python.exe -m ruff check .
+      workspace: vishwakarma
+    - name: mypy
+      command: .venv/Scripts/python.exe -m mypy forge
+      workspace: vishwakarma

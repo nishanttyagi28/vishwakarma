@@ -11,6 +11,12 @@ class ModelConfig(BaseModel):
     lightweight: str
 
 
+class GateSpec(BaseModel):
+    name: str
+    command: str
+    workspace: str
+
+
 class LimitsConfig(BaseModel):
     max_steps_per_run: int = Field(default=30, ge=1)
     max_revisions_per_task: int = Field(default=2, ge=0)
@@ -23,6 +29,7 @@ class ForgeConfig(BaseModel):
     workspaces: dict[str, str]
     model: ModelConfig
     limits: LimitsConfig
+    gates: dict[str, list[GateSpec]] = Field(default_factory=dict)
 
 
 def load_config(path: Path) -> ForgeConfig:
