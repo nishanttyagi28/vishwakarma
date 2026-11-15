@@ -7,6 +7,7 @@ run. Tools are the ONLY path by which an agent changes a repository.
 """
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from forge.permissions import PermissionChecker, PermissionDenied
@@ -28,20 +29,29 @@ def _truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 
 
 class ToolExecutor:
-    """Binds the permission checker to a role and executes named tools."""
+    """Binds the permission checker to a role and executes named tools.
+
+    ``named_tools`` registers role-specific tools (e.g. the PA's repo.search).
+    They are dispatched only after ``check_tool`` confirms the role's grant.
+    """
 
     def __init__(
         self,
         checker: PermissionChecker,
         role: str,
         shell_timeout_s: float = 120.0,
+        named_tools: dict[str, Callable[[dict[str, object]], ToolResult]] | None = None,
     ) -> None:
         self.checker = checker
         self.role = role
         self.shell_timeout_s = shell_timeout_s
+        self.named_tools = named_tools or {}
 
     def execute(self, tool: str, args: dict[str, object]) -> ToolResult:
         try:
+            if tool in self.named_tools:
+                self.checker.check_tool(self.role, tool)
+                return self.named_tools[tool](args)
             if tool == "fs.read":
                 return self._fs_read(args)
             if tool == "fs.write":

@@ -33,6 +33,8 @@ class ImplementationReport(BaseModel):
     tests_run: list[str] = Field(default_factory=list)
     self_assessment: str = ""
     open_issues: list[str] = Field(default_factory=list)
+    artifacts: dict[str, object] = Field(default_factory=dict)
+    """Role-specific structured output (e.g. the PA's curated context list)."""
 
 
 class RunResult(BaseModel):
