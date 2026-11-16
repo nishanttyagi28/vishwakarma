@@ -11,7 +11,7 @@ from forge.config import GateSpec, load_config
 from forge.gates import run_gate, run_gates_for_task
 from forge.ledger import APPROVED, TESTING, LedgerError, TaskLedger
 
-PY = "python"
+PY = "{python}"
 
 
 @pytest.fixture()
@@ -47,6 +47,33 @@ def test_run_gate_pass(ws):
 def test_run_gate_failure(ws):
     outcome = run_gate(fail_spec(), ws)
     assert not outcome.passed and outcome.exit_code == 3
+
+
+def test_run_gate_missing_executable_is_a_failed_gate(ws):
+    spec = GateSpec(name="missing", command="definitely-not-a-real-binary-xyz",
+                    workspace="proj")
+    outcome = run_gate(spec, ws)
+    assert not outcome.passed
+    assert outcome.exit_code == 127
+    assert "could not start" in outcome.output_tail
+
+
+def test_run_gate_missing_workspace_is_a_failed_gate(tmp_path):
+    spec = GateSpec(name="no-cwd", command=f"{PY} -c \"print(1)\"", workspace="proj")
+    outcome = run_gate(spec, tmp_path / "does-not-exist")
+    assert not outcome.passed
+    assert outcome.exit_code == 127
+    assert "could not start" in outcome.output_tail
+
+
+def test_run_gate_python_placeholder_uses_current_interpreter(ws):
+    import sys
+
+    spec = GateSpec(name="interp", command=f'{PY} -c "import sys; print(sys.executable)"',
+                    workspace="proj")
+    outcome = run_gate(spec, ws)
+    assert outcome.passed
+    assert Path(sys.executable).name in outcome.output_tail
 
 
 def test_run_gate_unknown_workspace_fails_loudly():
@@ -247,3 +274,17 @@ def test_cli_env_overrides_select_config_and_db(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "created E-1" in out
     assert db.exists()  # the env-selected ledger received the write
+
+
+def test_workspace_paths_resolve_relative_to_config(tmp_path):
+    (tmp_path / "proj").mkdir()
+    path = tmp_path / "forge.yaml"
+    path.write_text(yaml.safe_dump({
+        "org": "T", "version": "0.0.0", "workspaces": {"proj": "proj"},
+        "model": {"default": "m", "lightweight": "m"},
+        "limits": {"max_steps_per_run": 3, "max_revisions_per_task": 1,
+                   "max_retries_per_run": 1},
+        "gates": {},
+    }), encoding="utf-8")
+    config = load_config(path)
+    assert Path(config.workspaces["proj"]) == (tmp_path / "proj").resolve()

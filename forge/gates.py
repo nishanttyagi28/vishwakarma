@@ -9,6 +9,7 @@ results; they cannot produce, edit or delete them.
 import json
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,17 @@ def run_gate(spec: GateSpec, cwd: Path, timeout_s: float = 900.0) -> GateOutcome
     slashes work on Windows because CreateProcess accepts them directly.
     """
     argv = shlex.split(spec.command, posix=True)
+    # ``{python}`` is replaced with the interpreter running Forge, so gate
+    # commands never depend on a bare "python" being on PATH or on a
+    # platform-specific virtualenv layout (Scripts vs bin).
+    argv = [sys.executable if token == "{python}" else token for token in argv]
+    if argv and argv[0] in ("python", "python3"):
+        argv[0] = sys.executable
+    if not argv:
+        return GateOutcome(
+            gate=spec.name, command=spec.command, exit_code=127, passed=False,
+            output_tail="gate command is empty",
+        )
     # CreateProcess resolves the executable against the parent's cwd, not the
     # child's, so anchor a relative argv[0] to the gate's workspace explicitly.
     if ("/" in argv[0] or "\\" in argv[0]) and not Path(argv[0]).is_absolute():
@@ -64,6 +76,10 @@ def run_gate(spec: GateSpec, cwd: Path, timeout_s: float = 900.0) -> GateOutcome
         exit_code, output = proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except subprocess.TimeoutExpired:
         exit_code, output = -1, f"gate timed out after {timeout_s}s"
+    except (FileNotFoundError, OSError) as exc:
+        # A missing interpreter or unreadable workspace is a failed gate, not
+        # a crash of the trusted runner. Record it like any other failure.
+        exit_code, output = 127, f"gate could not start: {exc}"
     return GateOutcome(
         gate=spec.name,
         command=spec.command,

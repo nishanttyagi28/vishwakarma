@@ -78,7 +78,7 @@ def env(tmp_path):
         "model": {"default": "m", "lightweight": "m"},
         "limits": {"max_steps_per_run": 10, "max_revisions_per_task": 2,
                    "max_retries_per_run": 2},
-        "gates": {"proj": [{"name": "echo", "command": 'python -c "print(1)"',
+        "gates": {"proj": [{"name": "echo", "command": '{python} -c "print(1)"',
                             "workspace": WS}]},
     }), encoding="utf-8")
     config = load_config(config_path)
@@ -144,7 +144,7 @@ def test_assemble_produces_valid_package(env):
         "shell_allow": ["git status", "git diff", "git add", "git commit"],
         "tools": ["fs", "shell", "ledger.read"],
     }
-    assert 'python -c "print(1)"' in package.verification_commands
+    assert '{python} -c "print(1)"' in package.verification_commands
     assert package.estimated_tokens > 0
     validate_package(package, task, checker, config, token_cap=100000)
 

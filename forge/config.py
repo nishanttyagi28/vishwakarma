@@ -33,6 +33,19 @@ class ForgeConfig(BaseModel):
 
 
 def load_config(path: Path) -> ForgeConfig:
-    """Load and validate forge.yaml. Raises pydantic.ValidationError on bad config."""
+    """Load and validate forge.yaml. Raises pydantic.ValidationError on bad config.
+
+    Workspace paths are resolved relative to the directory containing the
+    config file, so a checked-out repository is portable across machines and
+    platforms (no absolute paths in forge.yaml).
+    """
+    path = Path(path)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return ForgeConfig.model_validate(data)
+    config = ForgeConfig.model_validate(data)
+    base = path.resolve().parent
+    config.workspaces = {
+        name: str((base / workspace).resolve()) if not Path(workspace).is_absolute()
+        else workspace
+        for name, workspace in config.workspaces.items()
+    }
+    return config

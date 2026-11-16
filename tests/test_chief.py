@@ -85,7 +85,7 @@ def env(tmp_path):
         "model": {"default": "m", "lightweight": "m"},
         "limits": {"max_steps_per_run": 12, "max_revisions_per_task": 1,
                    "max_retries_per_run": 1},
-        "gates": {"proj": [{"name": "echo", "command": 'python -c "print(1)"',
+        "gates": {"proj": [{"name": "echo", "command": '{python} -c "print(1)"',
                             "workspace": WS}]},
     }), encoding="utf-8")
     config = load_config(config_path)

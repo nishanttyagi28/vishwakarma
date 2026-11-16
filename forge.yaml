@@ -1,13 +1,14 @@
 # VISHWAKARMA runtime configuration.
 # Model assignment and budgets are engineering decisions recorded in the ledger.
+# Workspace paths are relative to this file, so the repository is portable.
 
 org: VISHWAKARMA
 version: 0.1.0
 
 workspaces:
-  vishwakarma: C:/Users/Admin/projects/vishwakarma
-  returnproof: C:/Users/Admin/projects/returnproof
-  smoke: C:/Users/Admin/projects/vishwakarma/fixtures/smoke
+  vishwakarma: "."
+  returnproof: "../returnproof"
+  smoke: "fixtures/smoke"
 
 model:
   default: deepseek-coder:6.7b          # specialist + CE + PA turns (sequential only)
@@ -20,21 +21,22 @@ limits:
 
 # Trusted quality gates, executed by the gate runner (never by agents).
 # Commands run with cwd = the workspace root. Results are hash-stamped into
-# the ledger; agents can only read them.
+# the ledger; agents can only read them. {python} is the interpreter running
+# Forge, so no platform-specific .venv/Scripts or .venv/bin path is needed.
 gates:
   vishwakarma:
     - name: pytest
-      command: .venv/Scripts/python.exe -m pytest -q
+      command: "{python} -m pytest -q"
       workspace: vishwakarma
     - name: ruff
-      command: .venv/Scripts/python.exe -m ruff check .
+      command: "{python} -m ruff check ."
       workspace: vishwakarma
     - name: mypy
-      command: .venv/Scripts/python.exe -m mypy forge
+      command: "{python} -m mypy forge"
       workspace: vishwakarma
   smoke:
     - name: solution-gate
       command: >-
-        python -c "import solution; assert solution.add(2,3)==5;
+        {python} -c "import solution; assert solution.add(2,3)==5;
         assert solution.add(0,0)==0; print('gate-ok')"
       workspace: smoke

@@ -33,7 +33,7 @@ def test_dashboard_shows_tasks_trace_and_gates(env):
     assert "dispatch" in page and "verdict" in page
     assert "gate_runner" in page and "verified" in page
     # gate result payload + hash stamp present
-    assert "python -c" in page and len(page) > 2000
+    assert "{python} -c" in page and len(page) > 2000
 
 
 def test_dashboard_escapes_hostile_task_titles(env):

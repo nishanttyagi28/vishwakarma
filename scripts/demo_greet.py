@@ -2,23 +2,25 @@
 
 Uses the real Chief Engineer, ledger, prompt registry, journal, gates and
 Forge Trace — with FakeModel adapters only (no Ollama; the laptop is
-RAM-limited). The demo project lives in C:/Users/Admin/projects/
-forge-demo-greet with its own git repo.
+RAM-limited). The demo project lives in a temporary directory (or in
+FORGE_DEMO_DIR when set) and is reproducible by re-running.
 
-Run:  .venv/Scripts/python.exe scripts/demo_greet.py
+Run:  python scripts/demo_greet.py
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-DEMO = Path("C:/Users/Admin/projects/forge-demo-greet")
+DEMO = Path(os.environ.get(
+    "FORGE_DEMO_DIR", Path(tempfile.gettempdir()) / "forge-demo-greet"))
 WS = "demo"
-VENV_PY = str(Path(__file__).resolve().parents[1] / ".venv" / "Scripts" /
-              "python.exe").replace("\\", "/")
+VENV_PY = sys.executable.replace("\\", "/")
 
 SPEC = """# forge-demo-greet
 
@@ -102,7 +104,7 @@ def main() -> int:
         "limits:\n  max_steps_per_run: 12\n  max_revisions_per_task: 2\n"
         "  max_retries_per_run: 1\n"
         "gates:\n  demo:\n    - name: demo-pytest\n"
-        f"      command: \"{VENV_PY} -m pytest -q\"\n      workspace: {WS}\n",
+        f'      command: "{{python}} -m pytest -q"\n      workspace: {WS}\n',
         encoding="utf-8",
     )
     config = load_config(cfg_path)
