@@ -119,3 +119,19 @@ are green.
   contention.
 - Deterministic tests cover independent tasks with two workers, dependent
   batches, shared-backend fallback and `max_tasks` bounding.
+
+## A-009 — Web UI upgrade
+
+- Task detail pages (`/?task=ID`) with metadata, token/cost usage, handoff
+  graph, handoff timeline, gate results, consecutive gate-result unified
+  diffs (with PASS/FAIL change) and state transitions.
+- Mission timeline pages (`/?mission=ID`) with chronological usage events and
+  links back to the participating tasks; mission ids in the summary table are
+  clickable.
+- Handoff graph rendered as a self-contained nested list from `parent_id`
+  links; no JavaScript, no external assets.
+- Auto-refresh every 5 seconds via `<meta http-equiv="refresh">`.
+- Still read-only, GET-only, loopback-only (`127.0.0.1`), with the same HTML
+  escaping for hostile task ids, titles and payloads.
+- Added tests for detail metadata, gate diffs, mission timeline, graph,
+  auto-refresh, hostile mission ids and the loopback bind address.

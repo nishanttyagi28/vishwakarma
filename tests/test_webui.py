@@ -1,6 +1,7 @@
 """Forge UI (P-003) tests: read-only dashboard rendering and serving."""
 from __future__ import annotations
 
+import json
 import urllib.request
 
 from forge.chief import Roadmap, TaskSpec
@@ -97,5 +98,57 @@ def test_dashboard_serves_per_task_query(env):
             body = resp.read().decode("utf-8")
         assert resp.status == 200
         assert "U-1" in body and "OTHER-9" not in body
+    finally:
+        server.close()
+
+
+def test_task_detail_page_has_metadata_graph_and_gate_diffs(env):
+    ledger = _seeded_ledger(env)
+    ledger.create("G-1", "gate diff task", "backend", scope="src/",
+                  acceptance="diff visible")
+    ledger.promote("G-1")
+    ledger.claim("G-1", "run-g")
+    ledger.submit_for_review("G-1", "backend", "done")
+    ledger.request_gates("G-1")
+    ledger.record_gates("G-1", json.dumps({
+        "gate": "pytest", "passed": False, "output_tail": "old failure"}))
+    ledger.record_gates("G-1", json.dumps({
+        "gate": "pytest", "passed": True, "output_tail": "new success"}))
+    page = build_dashboard_html(ledger, "G-1")
+    assert "gate diff task" in page
+    assert "acceptance" in page and "diff visible" in page
+    assert "Gate-result diffs" in page
+    assert "old failure" in page and "new success" in page
+    assert "--- pytest (FAIL)" in page and "+++ pytest (PASS)" in page
+    graph_page = build_dashboard_html(ledger, "U-1")
+    assert 'class="graph"' in graph_page
+
+
+def test_mission_timeline_page_links_tasks(env):
+    ledger = _seeded_ledger(env)
+    ledger.record_usage("U-1", role="backend", model="m", mission_id="m-ui",
+                        prompt_tokens=100, completion_tokens=25,
+                        cost_usd=0.0001)
+    page = build_dashboard_html(ledger, mission_id="m-ui")
+    assert "Mission timeline: m-ui" in page
+    assert 'href="/?task=U-1"' in page
+    assert "125" in page
+
+
+def test_mission_timeline_unknown_is_safe(env):
+    ledger = _seeded_ledger(env)
+    page = build_dashboard_html(ledger, mission_id="<script>x</script>")
+    assert "no usage recorded" in page
+    assert "<script>x</script>" not in page
+
+
+def test_dashboard_auto_refreshes_and_is_loopback_only(env):
+    ledger = _seeded_ledger(env)
+    page = build_dashboard_html(ledger)
+    assert 'http-equiv="refresh"' in page
+    assert "auto-refresh 5s" in page
+    server = DashboardServer(ledger, port=0)
+    try:
+        assert server.httpd.server_address[0] == "127.0.0.1"
     finally:
         server.close()
