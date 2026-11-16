@@ -349,3 +349,55 @@ def test_explicit_spec_still_wins(tmp_path):
     tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
     result = tools.execute("fs.write", {"path": f"{WS}:src/a.py", "content": "ok"})
     assert result.ok
+
+
+# --- named tools declared by roles.yaml --------------------------------------
+
+
+def _named_tools(tmp_path, tools=("fs", "repo.search", "prompt.save", "ledger.query")):
+    from forge.ledger import TaskLedger
+
+    grant_ = grant(role="prompt_architect")
+    grant_.tools = list(tools)
+    grant_.fs.write = [f"{WS}:forge/prompts/drafts/**"]
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    ledger = TaskLedger(tmp_path / "l.db")
+    return checker, grant_.role, ledger
+
+
+def test_repo_search_returns_matches_inside_grant(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("NEEDLE = 1\nother\n", encoding="utf-8")
+    checker, role, ledger = _named_tools(tmp_path)
+    tools = ToolExecutor(checker, role, default_workspace=WS, ledger=ledger)
+    result = tools.execute("repo.search", {"query": "needle"})
+    assert result.ok and "src/a.py:1" in result.output
+    ledger.close()
+
+
+def test_repo_search_requires_a_tool_grant(tmp_path):
+    checker, role, ledger = _named_tools(tmp_path, tools=("fs",))
+    tools = ToolExecutor(checker, role, default_workspace=WS, ledger=ledger)
+    result = tools.execute("repo.search", {"query": "x"})
+    assert not result.ok and result.denied
+    ledger.close()
+
+
+def test_prompt_save_writes_a_safe_draft_path(tmp_path):
+    checker, role, ledger = _named_tools(tmp_path)
+    tools = ToolExecutor(checker, role, default_workspace=WS, ledger=ledger)
+    result = tools.execute("prompt.save", {"name": "../../evil name",
+                                           "content": "draft"})
+    assert result.ok
+    drafts = list((tmp_path / "forge" / "prompts" / "drafts").iterdir())
+    assert len(drafts) == 1 and drafts[0].name.endswith(".md")
+    ledger.close()
+
+
+def test_ledger_query_is_read_only(tmp_path):
+    checker, role, ledger = _named_tools(tmp_path)
+    ledger.create("Q-1", "query me", "backend")
+    tools = ToolExecutor(checker, role, default_workspace=WS, ledger=ledger)
+    result = tools.execute("ledger.query", {"task_id": "Q-1"})
+    assert result.ok and "Q-1" in result.output and "BACKLOG" in result.output
+    ledger.close()

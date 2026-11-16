@@ -250,7 +250,8 @@ class ChiefEngineer:
                         feedback: str = "") -> RunResult:
         role = task.assignee_role
         tools = ToolExecutor(self.checker, role,
-                             default_workspace=self._default_workspace(package))
+                             default_workspace=self._default_workspace(package),
+                             ledger=self.ledger)
         agent = AgentRuntime(
             model=self.models[role],
             tools=tools,
@@ -269,7 +270,7 @@ class ChiefEngineer:
     def _run_reviewer(self, task: TaskRecord, specialist: RunResult,
                       gates: GatesReport, run_id: str) -> RunResult:
         role = self.reviewer_role
-        tools = ToolExecutor(self.checker, role)
+        tools = ToolExecutor(self.checker, role, ledger=self.ledger)
         files = specialist.report.files_changed if specialist.report else []
         agent = AgentRuntime(
             model=self.models[role],

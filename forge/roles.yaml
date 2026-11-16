@@ -14,7 +14,7 @@ roles:
       read: ["vishwakarma:", "returnproof:"]
       write: ["vishwakarma:docs/**", "vishwakarma:reports/**", "vishwakarma:roadmap.yaml"]
     shell_allow: ["forge", "git status", "git log", "git diff", "pytest"]
-    tools: [ledger.command, gate.request, dispatch.request, report.write]
+    tools: [ledger.query]
 
   - role: software_architect
     mission: >
@@ -24,7 +24,7 @@ roles:
       read: ["vishwakarma:", "returnproof:"]
       write: ["vishwakarma:docs/**", "returnproof:docs/**"]
     shell_allow: ["git status", "git diff"]
-    tools: [fs, ledger.read]
+    tools: [fs, ledger.query]
 
   - role: prompt_architect
     mission: >
@@ -58,7 +58,7 @@ roles:
       ["pytest", "ruff check", "ruff format", "mypy", "python -m", "python -c",
        "python", "python3", "alembic",
        "git status", "git diff", "git add", "git commit", "git log"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]
 
   - role: frontend
     mission: >
@@ -70,7 +70,7 @@ roles:
     shell_allow:
       ["npm run", "npm test", "npm ci", "npm install", "npx tsc", "npx eslint",
        "npx vitest", "git status", "git diff", "git add", "git commit"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]
 
   - role: data_engineer
     mission: >
@@ -85,7 +85,7 @@ roles:
         - "returnproof:datasets/**"
     shell_allow:
       ["pytest", "python -m", "ruff check", "git status", "git diff", "git add", "git commit"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]
 
   - role: ml_engineer
     mission: >
@@ -99,7 +99,7 @@ roles:
         - "returnproof:backend/tests/analytics/**"
     shell_allow:
       ["pytest", "python -m", "git status", "git diff", "git add", "git commit"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]
 
   - role: genai_engineer
     mission: >
@@ -113,7 +113,7 @@ roles:
         - "returnproof:evals/**"
     shell_allow:
       ["pytest", "python -m", "git status", "git diff", "git add", "git commit"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]
 
   - role: qa
     mission: >
@@ -130,7 +130,7 @@ roles:
         - "returnproof:datasets/**"
     shell_allow:
       ["pytest", "npm test", "npx vitest", "npx playwright", "git status", "git diff"]
-    tools: [fs, shell, ledger.read, gate.request]
+    tools: [fs, shell, ledger.query]
 
   - role: security
     mission: >
@@ -145,7 +145,7 @@ roles:
         - "returnproof:docs/security/**"
     shell_allow:
       ["pytest", "ruff check", "pip-audit", "git status", "git diff"]
-    tools: [fs, shell, ledger.read, security.gate]
+    tools: [fs, shell, ledger.query]
 
   - role: devops
     mission: >
@@ -165,4 +165,4 @@ roles:
     shell_allow:
       ["git status", "git log", "git add", "git commit", "git diff",
        "python -m pip install", "python -m venv", "py -3.12", "pytest"]
-    tools: [fs, shell, ledger.read]
+    tools: [fs, shell, ledger.query]

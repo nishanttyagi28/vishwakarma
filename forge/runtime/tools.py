@@ -6,13 +6,21 @@ correct course) and are counted by the runtime; repeated denial aborts the
 run. Tools are the ONLY path by which an agent changes a repository.
 """
 
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from forge.permissions import PermissionChecker, PermissionDenied, parse_shell_argv
 
+if TYPE_CHECKING:
+    from forge.ledger import TaskLedger
+
 MAX_OUTPUT_CHARS = 4000
+BUILTIN_NAMED_TOOLS = ("repo.search", "prompt.save", "ledger.query")
+SKIP_DIRS = {".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache",
+             ".ruff_cache", "node_modules", "dist", "build"}
 
 
 @dataclass
@@ -42,17 +50,23 @@ class ToolExecutor:
         shell_timeout_s: float = 120.0,
         named_tools: dict[str, Callable[[dict[str, object]], ToolResult]] | None = None,
         default_workspace: str | None = None,
+        ledger: "TaskLedger | None" = None,
     ) -> None:
         self.checker = checker
         self.role = role
         self.shell_timeout_s = shell_timeout_s
         self.named_tools = named_tools or {}
         self.default_workspace = default_workspace
+        self.ledger = ledger
 
     @property
     def tool_names(self) -> list[str]:
         base = ["fs.read", "fs.write", "fs.list", "shell.run"]
-        return base + sorted(self.named_tools)
+        grant = self.checker.grants.get(self.role)
+        granted = set(grant.tools) if grant else set()
+        builtin = [name for name in BUILTIN_NAMED_TOOLS if name in granted]
+        extra = sorted(set(self.named_tools) - set(builtin))
+        return base + builtin + extra
 
     def _resolve(self, spec: str) -> str:
         """Normalise a path spec, defaulting prefix-less paths to the task's
@@ -72,6 +86,9 @@ class ToolExecutor:
             if tool in self.named_tools:
                 self.checker.check_tool(self.role, tool)
                 return self.named_tools[tool](args)
+            if tool in BUILTIN_NAMED_TOOLS:
+                self.checker.check_tool(self.role, tool)
+                return getattr(self, "_" + tool.replace(".", "_"))(args)
             if tool in ("fs.read", "fs.write", "fs.list"):
                 self.checker.check_tool(self.role, "fs")
                 return getattr(self, "_" + tool.replace(".", "_"))(args)
@@ -114,6 +131,74 @@ class ToolExecutor:
         for child in sorted(path.iterdir()):
             entries.append(child.name + ("/" if child.is_dir() else ""))
         return ToolResult(True, _truncate("\n".join(entries) or "(empty)"))
+
+    def _repo_search(self, args: dict[str, object]) -> ToolResult:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ValueError("repo.search requires a non-empty 'query'")
+        path_arg = str(args.get("path", "")).strip()
+        if path_arg:
+            spec = self._resolve(path_arg)
+        elif self.default_workspace:
+            spec = f"{self.default_workspace}:"
+        else:
+            raise ValueError("repo.search requires a path or a default workspace")
+        root = self.checker.check_fs(self.role, "read", spec)
+        if not root.exists():
+            return ToolResult(False, f"path does not exist: {spec}")
+        candidates = [root] if root.is_file() else sorted(root.rglob("*"))
+        hits: list[str] = []
+        scanned = 0
+        for candidate in candidates:
+            if len(hits) >= 50 or scanned >= 500:
+                break
+            if not candidate.is_file():
+                continue
+            if any(part in SKIP_DIRS for part in candidate.parts):
+                continue
+            if candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".pdf",
+                                            ".zip", ".pyc", ".sqlite3"}:
+                continue
+            scanned += 1
+            try:
+                lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            base = root if root.is_dir() else root.parent
+            for number, line in enumerate(lines, start=1):
+                if query.lower() in line.lower():
+                    rel = candidate.relative_to(base).as_posix()
+                    hits.append(f"{rel}:{number}: {line.strip()[:200]}")
+                    if len(hits) >= 50:
+                        break
+        return ToolResult(True, _truncate("\n".join(hits) or "(no matches)"))
+
+    def _prompt_save(self, args: dict[str, object]) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+        if not safe:
+            raise ValueError("prompt.save requires a non-empty 'name'")
+        if not self.default_workspace:
+            raise ValueError("prompt.save requires a default workspace")
+        spec = f"{self.default_workspace}:forge/prompts/drafts/{safe}.md"
+        return self._fs_write({"path": spec, "content": str(args.get("content", ""))})
+
+    def _ledger_query(self, args: dict[str, object]) -> ToolResult:
+        if self.ledger is None:
+            return ToolResult(False, "ledger.query unavailable in this runtime")
+        task_id = str(args.get("task_id", "")).strip()
+        try:
+            if task_id:
+                task = self.ledger.get(task_id)
+                return ToolResult(True, _truncate(
+                    f"{task.id} [{task.status}] {task.assignee_role} - {task.title}"
+                ))
+            status = str(args.get("status", "")).strip() or None
+            tasks = self.ledger.list_tasks(status)
+        except Exception as exc:  # ledger errors are observations for the agent
+            return ToolResult(False, f"ledger error: {exc}")
+        lines = [f"{t.id} [{t.status}] {t.assignee_role} - {t.title}" for t in tasks]
+        return ToolResult(True, _truncate("\n".join(lines) or "(no tasks)"))
 
     def _shell_run(self, args: dict[str, object]) -> ToolResult:
         command = str(args.get("command", ""))

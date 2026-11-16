@@ -249,8 +249,14 @@ def test_prompt_architect_tools_are_limited(checker):
         checker.check_tool("prompt_architect", "dispatch.task")
 
 
-def test_chief_has_dispatch_but_agents_do_not(checker):
-    checker.check_tool("chief", "dispatch.request")
-    for role in EXPECTED_ROLES - {"chief"}:
+def test_named_tools_are_real_and_scoped(checker):
+    """Every declared named tool is implemented and only granted where declared."""
+    checker.check_tool("prompt_architect", "repo.search")
+    checker.check_tool("prompt_architect", "prompt.save")
+    checker.check_tool("prompt_architect", "ledger.query")
+    for role in EXPECTED_ROLES - {"prompt_architect"}:
         with pytest.raises(PermissionDenied):
-            checker.check_tool(role, "dispatch.request")
+            checker.check_tool(role, "repo.search")
+    for role in ("backend", "qa", "security"):
+        with pytest.raises(PermissionDenied):
+            checker.check_tool(role, "prompt.save")

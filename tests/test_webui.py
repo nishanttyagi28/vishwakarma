@@ -67,3 +67,35 @@ def test_dashboard_served_over_local_http(env):
         assert "Forge Dashboard" in body and "U-1" in body
     finally:
         server.close()
+
+
+def test_dashboard_task_view_filters_one_task(env):
+    ledger = _seeded_ledger(env)
+    ledger.create("OTHER-9", "unrelated task", "backend")
+    page = build_dashboard_html(ledger, "U-1")
+    assert "U-1" in page
+    assert "OTHER-9" not in page
+
+
+def test_dashboard_task_view_handles_unknown_and_hostile_ids(env):
+    ledger = _seeded_ledger(env)
+    page = build_dashboard_html(ledger, "<script>alert(1)</script>")
+    assert "no such task" in page
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_dashboard_serves_per_task_query(env):
+    ledger = _seeded_ledger(env)
+    ledger.create("OTHER-9", "unrelated task", "backend")
+    server = DashboardServer(ledger, port=0)
+    try:
+        server.start_background()
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.port}/?task=U-1", timeout=5
+        ) as resp:
+            body = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "U-1" in body and "OTHER-9" not in body
+    finally:
+        server.close()

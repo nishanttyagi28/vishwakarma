@@ -60,3 +60,17 @@ are green.
   Ollama backend; tests use `fake` only.
 - The Chief command reuses the CLI's ledger instance (single open/close) and
   closes only its own registry and journal.
+
+## A-005 — Documentation truth
+
+- Renamed `ADR-0001-custom-agent-runtime.md` (it no longer claims PostgreSQL)
+  and split the appended PostgreSQL text into
+  `ADR-0002-sqlite-ledger.md`, which documents the shipped SQLite ledger and
+  supersedes the earlier proposal. Architecture/README links updated.
+- Web UI docstring no longer advertises a missing `--task` flag; the per-task
+  `?task=ID` view is now implemented, including safe handling of unknown and
+  hostile task ids.
+- `repo.search`, `prompt.save` and `ledger.query` are real, permission-checked
+  `ToolExecutor` tools; roles.yaml now declares only implemented tools
+  (`fs`, `shell`, `repo.search`, `prompt.save`, `ledger.query`).
+- Added tool-grant, search, draft-path, ledger-read and UI task-view tests.

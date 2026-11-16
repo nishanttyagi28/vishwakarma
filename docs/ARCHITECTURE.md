@@ -9,7 +9,8 @@ Design decisions live in [`docs/adr/`](adr/):
 
 | ADR | Decision |
 |---|---|
-| [ADR-0001](adr/ADR-0001-custom-runtime-and-native-postgres.md) | Lightweight custom agent runtime instead of LangGraph/CrewAI/AutoGen |
+| [ADR-0001](adr/ADR-0001-custom-agent-runtime.md) | Lightweight custom agent runtime instead of LangGraph/CrewAI/AutoGen |
+| [ADR-0002](adr/ADR-0002-sqlite-ledger.md) | SQLite ledger (supersedes the earlier PostgreSQL proposal) |
 | [ADR-0003](adr/ADR-0003-deterministic-chief-loop.md) | The Chief Engineer loop is deterministic mechanism invoking LLM agents |
 | [ADR-0006](adr/ADR-0006-forge-trace-handoff-observability.md) | Forge Trace: append-only handoff observability in the ledger |
 

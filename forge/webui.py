@@ -5,13 +5,15 @@ Forge Trace handoff timeline, gate results, state transitions) as static
 HTML; an http.server serves it on 127.0.0.1 only. No writes, no auth surface
 beyond loopback, no Ollama. RAM-light by construction.
 
-CLI:  .venv/Scripts/python.exe -m forge.cli ui [--task TASK] [--port N]
+CLI:  python -m forge.cli ui [--port N] [--print]
+Per-task view: http://127.0.0.1:8765/?task=TASK
 """
 from __future__ import annotations
 
 import html
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from .ledger import TaskLedger
 
@@ -62,9 +64,15 @@ def _cls(status: str) -> str:
     return "pend"
 
 
-def build_dashboard_html(ledger: TaskLedger) -> str:
-    """Render the whole read-only dashboard. Pure function of the ledger."""
-    tasks = ledger.list_tasks()
+def build_dashboard_html(ledger: TaskLedger, task_id: str | None = None) -> str:
+    """Render the read-only dashboard, optionally scoped to one task.
+
+    Pure function of the ledger: no writes, no external requests.
+    """
+    all_tasks = ledger.list_tasks()
+    tasks = all_tasks
+    if task_id is not None:
+        tasks = [t for t in all_tasks if t.id == task_id]
     task_rows = "\n".join(
         _TASK_ROW.format(
             id=html.escape(t.id), status=f'<span class="{_cls(t.status)}">'
@@ -110,6 +118,11 @@ def build_dashboard_html(ledger: TaskLedger) -> str:
             tid=html.escape(t.id), title=html.escape(t.title),
             handoffs=handoff_html, gates=gates_html, trans=trans_html,
         )
+    if task_id is not None and not tasks:
+        sections = (f"<p>no such task: {html.escape(task_id)}</p>"
+                    '<p><a href="/">back to all tasks</a></p>')
+    elif task_id is not None:
+        sections = '<p><a href="/">back to all tasks</a></p>' + sections
     return _PAGE.format(
         ledger_path=html.escape(str(ledger.db_path)),
         task_rows=task_rows, sections=sections,
@@ -138,8 +151,11 @@ class DashboardServer:
         return self.httpd.server_address[1]
 
     def render(self, handler: BaseHTTPRequestHandler) -> None:
+        query = parse_qs(urlparse(handler.path).query)
+        task_values = query.get("task")
+        task_id = task_values[0] if task_values else None
         with self._lock:  # serialize cross-thread ledger reads
-            page = build_dashboard_html(self.ledger)
+            page = build_dashboard_html(self.ledger, task_id)
         body = page.encode("utf-8")
         handler.send_response(200)
         handler.send_header("Content-Type", "text/html; charset=utf-8")
@@ -156,4 +172,5 @@ class DashboardServer:
         return t
 
     def close(self) -> None:
+        self.httpd.shutdown()
         self.httpd.server_close()
