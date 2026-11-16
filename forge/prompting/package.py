@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from forge.config import ForgeConfig
 from forge.ledger import TaskRecord
-from forge.permissions import PermissionChecker
+from forge.permissions import PermissionChecker, RoleGrant
 from forge.prompting.secrets import is_sensitive_path, redact_text
 
 EXCERPT_CHARS = 1500
@@ -68,7 +68,7 @@ class PackageValidationError(Exception):
         super().__init__("; ".join(errors))
 
 
-def _grants_snapshot(grant) -> dict[str, list[str]]:
+def _grants_snapshot(grant: RoleGrant) -> dict[str, list[str]]:
     return {
         "fs.read": list(grant.fs.read),
         "fs.write": list(grant.fs.write),

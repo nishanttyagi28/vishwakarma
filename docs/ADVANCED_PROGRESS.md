@@ -74,3 +74,15 @@ are green.
   `ToolExecutor` tools; roles.yaml now declares only implemented tools
   (`fs`, `shell`, `repo.search`, `prompt.save`, `ledger.query`).
 - Added tool-grant, search, draft-path, ledger-read and UI task-view tests.
+
+## A-006 — Repository hygiene
+
+- Added MIT `LICENSE` (Copyright 2026 Nishant Tyagi).
+- Added `.github/workflows/ci.yml`: pytest with coverage, ruff and mypy on
+  `ubuntu-latest` and `windows-latest` with Python 3.12.
+- `pytest-cov` and `coverage` are dev dependencies; coverage is configured with
+  an 88% floor and CI fails below it. Current total: **89.22%**.
+- Turned on `mypy.disallow_untyped_defs` and annotated the last untyped
+  helpers (`iter_scannable_files`, `_grants_snapshot`).
+- Added a hygiene test that keeps the license, CI matrix and strict
+  mypy/coverage settings honest.

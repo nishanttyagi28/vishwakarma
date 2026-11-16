@@ -5,6 +5,7 @@ at repository scale (thousands of files at most) a linear scan is fast enough
 and fully reproducible, which matters for auditability.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 
 SKIP_DIRS = {
@@ -15,7 +16,7 @@ SKIP_DIRS = {
 SCAN_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".ts", ".tsx", ".json", ".txt"}
 
 
-def iter_scannable_files(root: Path):
+def iter_scannable_files(root: Path) -> Iterator[Path]:
     for path in root.rglob("*"):
         if not path.is_file():
             continue
