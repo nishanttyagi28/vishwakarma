@@ -27,3 +27,19 @@ are green.
   (overridable with `FORGE_DEMO_DIR`); no hardcoded user paths.
 - Added tests for missing interpreters, missing workspaces, the `{python}`
   placeholder and relative workspace resolution.
+
+## A-003 — Ledger-enforced approval invariants
+
+- `TaskLedger.approve` now independently requires TESTING state, at least one
+  recorded trusted gate result with every latest gate passing, and a verified
+  CLEAN verdict from a reviewer whose role differs from the implementer.
+- `task review` records an independent review verdict through the CLI, so real
+  operators have a governance path to approval.
+- `claim` writes the status change and its transition row in one transaction;
+  a failed audit insert rolls the claim back.
+- The backend role lost `forge/**` write access; governance files
+  (`roles.yaml`, `permissions.py`, `ledger.py`, `gates.py`, `chief.py`,
+  `cli.py`) are not writable by any agent. Backend keeps the runtime, model and
+  prompting packages.
+- Replaced the vacuous revision-budget assertion with a real history check and
+  added approval-invariant and atomic-claim tests.

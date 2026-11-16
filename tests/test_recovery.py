@@ -1,5 +1,6 @@
 """Recovery tests: interruption detection, retry budget, git-report safety."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,9 @@ def test_recovery_is_noop_for_clean_states():
         ledger.claim("T-1", "run-1")
         ledger.submit_for_review("T-1", "backend", "d")
         ledger.request_gates("T-1")
+        ledger.record_gates("T-1", json.dumps({"gate": "pytest", "passed": True}))
+        ledger.record_handoff("T-1", sender="qa", receiver="chief", kind="verdict",
+                              verified=True, detail={"verdict": "CLEAN"})
         ledger.approve("T-1", "chief")
         # APPROVED is terminal: direct recovery must refuse to touch it
         with pytest.raises(LedgerError):

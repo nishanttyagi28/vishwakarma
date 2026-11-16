@@ -30,6 +30,7 @@ from forge.ledger import (
     CHANGES_REQUESTED,
     FOUNDER,
     IN_PROGRESS,
+    KIND_VERDICT,
     READY,
     REVIEW,
     TESTING,
@@ -118,6 +119,12 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
     p_unblock.add_argument("--actor", required=True)
     p_unblock.add_argument("--reason", required=True)
 
+    p_review = tsub.add_parser("review")
+    p_review.add_argument("task_id")
+    p_review.add_argument("--reviewer", required=True)
+    p_review.add_argument("--verdict", choices=["CLEAN", "ISSUES"], required=True)
+    p_review.add_argument("--findings", nargs="*", default=[])
+
     p_approve = tsub.add_parser("approve")
     p_approve.add_argument("task_id")
     p_approve.add_argument("--actor", required=True)
@@ -204,6 +211,20 @@ def execute(argv: list[str], config_path: Path, db_path: Path) -> str:
             elif args.tcmd == "unblock":
                 record = ledger.unblock(args.task_id, args.actor, args.reason)
                 _print(out, f"{record.id} -> READY (unblocked for retry)")
+            elif args.tcmd == "review":
+                task_record = ledger.get(args.task_id)
+                if args.reviewer == task_record.assignee_role:
+                    raise ValueError("reviewer must be independent of the implementer")
+                gate_outcomes = ledger.latest_gate_outcomes(args.task_id)
+                gates_green = bool(gate_outcomes) and all(gate_outcomes.values())
+                hid = ledger.record_handoff(
+                    args.task_id, sender=args.reviewer, receiver="chief",
+                    kind=KIND_VERDICT, status="completed",
+                    verified=args.verdict == "CLEAN" and gates_green,
+                    detail={"verdict": args.verdict, "findings": args.findings,
+                            "gates_passed": gates_green},
+                )
+                _print(out, f"review {hid} recorded: {args.verdict} by {args.reviewer}")
             elif args.tcmd == "approve":
                 if args.actor not in ("chief", FOUNDER):
                     raise ValueError("approve actor must be chief or founder")

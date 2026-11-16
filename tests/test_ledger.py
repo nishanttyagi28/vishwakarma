@@ -1,5 +1,6 @@
 """Tests for the Forge task ledger and state machine."""
 
+import json
 import sqlite3
 
 import pytest
@@ -39,6 +40,17 @@ def make_task(ledger, task_id="T-1", depends_on=None, human_gate=False):
     )
 
 
+def satisfy_approval(ledger, task_id="T-1", reviewer="qa", verdict="CLEAN",
+                     gate="pytest", passed=True):
+    """Record the evidence the ledger itself demands before approval."""
+    ledger.record_gates(task_id, json.dumps({"gate": gate, "passed": passed}))
+    ledger.record_handoff(
+        task_id, sender=reviewer, receiver="chief", kind="verdict",
+        verified=(verdict == "CLEAN" and passed),
+        detail={"verdict": verdict, "findings": []},
+    )
+
+
 # --- creation and dependencies ------------------------------------------------
 
 
@@ -68,6 +80,7 @@ def test_promote_blocked_until_dependencies_approved(ledger):
     ledger.claim("T-dep", "run-1")
     ledger.submit_for_review("T-dep", "backend", "done")
     ledger.request_gates("T-dep")
+    satisfy_approval(ledger, "T-dep")
     ledger.approve("T-dep", "chief")
     ledger.promote("T-main")
     assert ledger.status_of("T-main") == READY
@@ -122,7 +135,7 @@ def drive_to_testing(ledger, task_id="T-1"):
 
 def test_happy_path_reaches_approved(ledger):
     drive_to_testing(ledger)
-    ledger.record_gates("T-1", '{"pytest": "29 passed"}')
+    satisfy_approval(ledger)
     task = ledger.approve("T-1", "chief", "gates green, review clean")
     assert task.status == APPROVED
     assert task.status in TERMINAL_STATES
@@ -184,9 +197,11 @@ def test_revision_budget_exhaustion_escalates(ledger):
     ledger.submit_for_review("T-1", "backend", "done v3")
     task = ledger.request_changes("T-1", "chief", "still wrong v3")  # revision 3 -> blocked
     assert task.status == BLOCKED_HUMAN
-    assert "revision budget exhausted" in task.claimed_run or True
     history = ledger.history("T-1")
-    assert any(t.to_status == BLOCKED_HUMAN for t in history)
+    blocking = [t for t in history if t.to_status == BLOCKED_HUMAN]
+    assert blocking, "no BLOCKED_HUMAN transition recorded"
+    assert "revision budget exhausted" in blocking[-1].reason
+    assert blocking[-1].from_status == REVIEW
 
 
 # --- human gate ---------------------------------------------------------------
@@ -208,6 +223,7 @@ def test_human_gated_task_approvable_by_founder(ledger):
     ledger.claim("T-1", "run-1")
     ledger.submit_for_review("T-1", "backend", "done")
     ledger.request_gates("T-1")
+    satisfy_approval(ledger)
     task = ledger.approve("T-1", "founder", "founder decision")
     assert task.status == APPROVED
 
@@ -232,9 +248,10 @@ def test_cancel_from_ready(ledger):
 
 def test_audit_trail_records_every_transition(ledger):
     drive_to_testing(ledger)
+    satisfy_approval(ledger)
     ledger.approve("T-1", "chief")
     history = ledger.history("T-1")
-    statuses = [t.to_status for t in history]
+    statuses = [t.to_status for t in history if t.from_status != t.to_status]
     assert statuses == [READY, IN_PROGRESS, REVIEW, TESTING, APPROVED]
     assert all(t.actor for t in history)
     assert history[0].from_status == BACKLOG
@@ -243,7 +260,7 @@ def test_audit_trail_records_every_transition(ledger):
 def test_audit_trail_is_append_only(ledger):
     """No UPDATE or DELETE may ever touch the audit tables - enforced by triggers."""
     drive_to_testing(ledger)
-    ledger.record_gates("T-1", '{"pytest": "ok"}')  # ensure gate_results has rows
+    satisfy_approval(ledger)  # ensure gate_results and handoffs have rows
     conn = sqlite3.connect(ledger.db_path)
     try:
         with pytest.raises(sqlite3.IntegrityError):
@@ -260,7 +277,7 @@ def test_audit_trail_is_append_only(ledger):
 
 def test_gate_results_are_hash_stamped(ledger):
     drive_to_testing(ledger)
-    result = ledger.record_gates("T-1", '{"pytest": "29 passed"}')
+    result = ledger.record_gates("T-1", json.dumps({"gate": "pytest", "passed": True}))
     stored = ledger.gate_results("T-1")
     assert len(stored) == 1
     assert stored[0].payload_sha256 == result.payload_sha256
@@ -270,3 +287,71 @@ def test_gate_results_are_hash_stamped(ledger):
 def test_unknown_task_refused(ledger):
     with pytest.raises(LedgerError):
         ledger.get("nope")
+
+
+# --- approval invariants (enforced by the ledger, not the caller) -------------
+
+
+def test_approve_requires_recorded_gate_results(ledger):
+    drive_to_testing(ledger)
+    with pytest.raises(LedgerError, match="no trusted gate results"):
+        ledger.approve("T-1", "chief")
+
+
+def test_approve_requires_a_clean_independent_review(ledger):
+    drive_to_testing(ledger)
+    ledger.record_gates("T-1", json.dumps({"gate": "pytest", "passed": True}))
+    with pytest.raises(LedgerError, match="no independent review"):
+        ledger.approve("T-1", "chief")
+
+
+def test_approve_rejects_issues_verdict(ledger):
+    drive_to_testing(ledger)
+    satisfy_approval(ledger, verdict="ISSUES")
+    with pytest.raises(LedgerError, match="not CLEAN"):
+        ledger.approve("T-1", "chief")
+
+
+def test_approve_rejects_self_review(ledger):
+    drive_to_testing(ledger)
+    satisfy_approval(ledger, reviewer="backend")
+    with pytest.raises(LedgerError, match="not independent"):
+        ledger.approve("T-1", "chief")
+
+
+def test_latest_failed_gate_blocks_approval(ledger):
+    drive_to_testing(ledger)
+    satisfy_approval(ledger)  # an earlier pass
+    ledger.record_gates("T-1", json.dumps({"gate": "pytest", "passed": False}))
+    with pytest.raises(LedgerError, match="latest gate results failed"):
+        ledger.approve("T-1", "chief")
+
+
+def test_approve_requires_testing_state(ledger):
+    make_task(ledger)
+    ledger.promote("T-1")
+    ledger.claim("T-1", "run-1")
+    ledger.submit_for_review("T-1", "backend", "done")
+    with pytest.raises(LedgerError, match="not TESTING"):
+        ledger.approve("T-1", "chief")
+
+
+def test_claim_is_one_transaction(ledger):
+    """If the audit insert fails, the status update rolls back too."""
+    make_task(ledger)
+    ledger.promote("T-1")
+    conn = sqlite3.connect(ledger.db_path)
+    try:
+        conn.execute(
+            "CREATE TRIGGER fail_claim BEFORE INSERT ON transitions "
+            "WHEN NEW.reason LIKE 'claimed by%' "
+            "BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END;"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.IntegrityError):
+        ledger.claim("T-1", "run-1")
+    assert ledger.status_of("T-1") == READY
+    assert ledger.get("T-1").claimed_run is None
+    assert not any("claimed by" in t.reason for t in ledger.history("T-1"))

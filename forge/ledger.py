@@ -339,25 +339,29 @@ class TaskLedger:
         return self._transition(task_id, READY, actor, "promoted to READY")
 
     def claim(self, task_id: str, run_id: str) -> TaskRecord:
-        """Atomically claim a READY task for execution. Raises if not READY."""
+        """Atomically claim a READY task for execution. Raises if not READY.
+
+        The conditional UPDATE and its audit transition commit as one
+        transaction: either the task is IN_PROGRESS with a matching history
+        row, or nothing changed at all.
+        """
         now = _now()
-        cur = self._conn.execute(
-            "UPDATE tasks SET status = ?, claimed_run = ?, updated_at = ?"
-            " WHERE id = ? AND status = ?",
-            (IN_PROGRESS, run_id, now, task_id, READY),
-        )
-        if cur.rowcount != 1:
-            row = self._get_row(task_id)
-            raise LedgerError(
-                f"task {task_id!r} not claimable (status={row['status']!r})"
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE tasks SET status = ?, claimed_run = ?, updated_at = ?"
+                " WHERE id = ? AND status = ?",
+                (IN_PROGRESS, run_id, now, task_id, READY),
             )
-        self._conn.commit()
-        self._conn.execute(
-            "INSERT INTO transitions (task_id, from_status, to_status, actor, reason, at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, READY, IN_PROGRESS, "worker", f"claimed by run {run_id}", now),
-        )
-        self._conn.commit()
+            if cur.rowcount != 1:
+                row = self._get_row(task_id)
+                raise LedgerError(
+                    f"task {task_id!r} not claimable (status={row['status']!r})"
+                )
+            self._conn.execute(
+                "INSERT INTO transitions (task_id, from_status, to_status, actor, reason, at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (task_id, READY, IN_PROGRESS, "worker", f"claimed by run {run_id}", now),
+            )
         return self.get(task_id)
 
     def submit_for_review(self, task_id: str, actor: str, summary: str) -> TaskRecord:
@@ -414,12 +418,66 @@ class TaskLedger:
             )
         return GateResult(task_id=task_id, payload=payload, payload_sha256=digest, at=now)
 
+    def latest_gate_outcomes(self, task_id: str) -> dict[str, bool]:
+        """Latest recorded verdict per gate name (gate runner payloads only)."""
+        latest: dict[str, bool] = {}
+        for result in self.gate_results(task_id):
+            try:
+                data = json.loads(result.payload)
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            name = data.get("gate")
+            passed = data.get("passed")
+            if isinstance(name, str) and isinstance(passed, bool):
+                latest[name] = passed
+        return latest
+
+    def latest_verdict(self, task_id: str) -> HandoffRecord | None:
+        """The most recent independent-review verdict handoff, if any."""
+        for handoff in reversed(self.handoffs_for(task_id)):
+            if handoff.kind == KIND_VERDICT:
+                return handoff
+        return None
+
+    def _approval_blockers(self, task: TaskRecord) -> list[str]:
+        """Reasons approval is refused. The ledger, not the caller, decides."""
+        blockers: list[str] = []
+        if task.status != TESTING:
+            blockers.append(f"task is {task.status!r}, not TESTING")
+        outcomes = self.latest_gate_outcomes(task.id)
+        if not outcomes:
+            blockers.append("no trusted gate results recorded")
+        failed = sorted(name for name, passed in outcomes.items() if not passed)
+        if failed:
+            blockers.append(f"latest gate results failed: {failed}")
+        verdict = self.latest_verdict(task.id)
+        if verdict is None:
+            blockers.append("no independent review verdict recorded")
+        else:
+            if verdict.sender == task.assignee_role:
+                blockers.append("reviewer is the implementing role (not independent)")
+            if str(verdict.detail.get("verdict", "")) != "CLEAN":
+                blockers.append("latest review verdict is not CLEAN")
+            if not verdict.verified:
+                blockers.append("latest review verdict is not verified")
+        return blockers
+
     def approve(self, task_id: str, actor: str, note: str = "") -> TaskRecord:
+        """Approve only from TESTING with green gates and a CLEAN review.
+
+        This invariant lives in the ledger itself, so no caller - CLI, Chief
+        Engineer or future plugin - can approve unverified work.
+        """
         task = self.get(task_id)
         if task.human_gate and actor != FOUNDER:
             raise LedgerError(
                 f"task {task_id!r} is human-gated; only the founder may approve"
             )
+        blockers = self._approval_blockers(task)
+        if blockers:
+            raise LedgerError(f"task {task_id!r} cannot be approved: " + "; ".join(blockers))
         return self._transition(task_id, APPROVED, actor, note or "approved")
 
     def request_changes(self, task_id: str, actor: str, findings: str) -> TaskRecord:

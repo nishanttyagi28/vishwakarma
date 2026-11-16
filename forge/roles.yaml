@@ -44,7 +44,11 @@ roles:
     fs:
       read: ["vishwakarma:", "returnproof:"]
       write:
-        - "vishwakarma:forge/**"
+        # Governance files (roles.yaml, permissions.py, ledger.py, gates.py,
+        # chief.py, cli.py) are deliberately NOT writable by any agent.
+        - "vishwakarma:forge/runtime/**"
+        - "vishwakarma:forge/model/**"
+        - "vishwakarma:forge/prompting/**"
         - "vishwakarma:tests/**"
         - "vishwakarma:fixtures/**"
         - "returnproof:backend/**"
@@ -52,7 +56,7 @@ roles:
         - "returnproof:alembic/**"
     shell_allow:
       ["pytest", "ruff check", "ruff format", "mypy", "python -m", "python -c",
-       "python", ".venv/Scripts/python.exe", "alembic",
+       "python", "python3", "alembic",
        "git status", "git diff", "git add", "git commit", "git log"]
     tools: [fs, shell, ledger.read]
 

@@ -52,9 +52,23 @@ def test_every_role_has_fs_read_scope(checker):
 # --- filesystem grants -------------------------------------------------------
 
 
-def test_backend_can_write_forge_module(checker):
-    path = checker.check_fs("backend", "write", "vishwakarma:forge/permissions.py")
-    assert path == checker.workspace_root("vishwakarma") / "forge" / "permissions.py"
+def test_backend_can_write_runtime_module(checker):
+    path = checker.check_fs("backend", "write", "vishwakarma:forge/runtime/tools.py")
+    assert path == checker.workspace_root("vishwakarma") / "forge" / "runtime" / "tools.py"
+
+
+def test_backend_cannot_write_governance_files(checker):
+    """No agent may edit the permission engine or the role grants."""
+    for target in (
+        "vishwakarma:forge/permissions.py",
+        "vishwakarma:forge/roles.yaml",
+        "vishwakarma:forge/ledger.py",
+        "vishwakarma:forge/gates.py",
+        "vishwakarma:forge/chief.py",
+        "vishwakarma:forge/cli.py",
+    ):
+        with pytest.raises(PermissionDenied):
+            checker.check_fs("backend", "write", target)
 
 
 def test_backend_cannot_write_frontend(checker):

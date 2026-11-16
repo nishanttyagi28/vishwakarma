@@ -161,6 +161,9 @@ def test_cli_full_lifecycle_to_approved(cli_env, ws):
     assert "REVIEW" in out
     out = execute(["gate", "run", "T-1", "--workspace", "proj"], config_path, db_path)
     assert "GATES PASSED" in out
+    out = execute(["task", "review", "T-1", "--reviewer", "qa", "--verdict", "CLEAN"],
+                  config_path, db_path)
+    assert "CLEAN" in out
     out = execute(["task", "approve", "T-1", "--actor", "chief", "--note", "ok"],
                   config_path, db_path)
     assert "APPROVED" in out
@@ -203,7 +206,9 @@ def test_cli_human_gate_requires_founder(cli_env):
     execute(["task", "claim", "T-2", "--run-id", "run-1"], config_path, db_path)
     execute(["task", "submit", "T-2", "--actor", "backend", "--summary", "done"],
             config_path, db_path)
-    execute(["task", "gates", "T-2"], config_path, db_path)  # REVIEW -> TESTING
+    execute(["gate", "run", "T-2", "--workspace", "proj"], config_path, db_path)
+    execute(["task", "review", "T-2", "--reviewer", "qa", "--verdict", "CLEAN"],
+            config_path, db_path)
     with pytest.raises(LedgerError):
         execute(["task", "approve", "T-2", "--actor", "chief"], config_path, db_path)
     out = execute(["task", "approve", "T-2", "--actor", "founder", "--note", "ok"],
