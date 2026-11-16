@@ -10,7 +10,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from forge.permissions import PermissionChecker, PermissionDenied
+from forge.permissions import PermissionChecker, PermissionDenied, parse_shell_argv
 
 MAX_OUTPUT_CHARS = 4000
 
@@ -72,13 +72,11 @@ class ToolExecutor:
             if tool in self.named_tools:
                 self.checker.check_tool(self.role, tool)
                 return self.named_tools[tool](args)
-            if tool == "fs.read":
-                return self._fs_read(args)
-            if tool == "fs.write":
-                return self._fs_write(args)
-            if tool == "fs.list":
-                return self._fs_list(args)
+            if tool in ("fs.read", "fs.write", "fs.list"):
+                self.checker.check_tool(self.role, "fs")
+                return getattr(self, "_" + tool.replace(".", "_"))(args)
             if tool == "shell.run":
+                self.checker.check_tool(self.role, "shell")
                 return self._shell_run(args)
             return ToolResult(
                 False,
@@ -120,15 +118,25 @@ class ToolExecutor:
     def _shell_run(self, args: dict[str, object]) -> ToolResult:
         command = str(args.get("command", ""))
         self.checker.check_shell(self.role, command)
+        argv = parse_shell_argv(command)
+        cwd = None
+        if self.default_workspace:
+            try:
+                cwd = self.checker.workspace_root(self.default_workspace)
+            except PermissionDenied:
+                cwd = None
         try:
             proc = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=self.shell_timeout_s,
             )
         except subprocess.TimeoutExpired:
             return ToolResult(False, f"command timed out after {self.shell_timeout_s}s")
+        except OSError as exc:
+            return ToolResult(False, f"TOOL_ERROR: cannot execute {argv[0]!r}: {exc}")
         combined = (proc.stdout or "") + (proc.stderr or "")
         return ToolResult(True, _truncate(f"exit={proc.returncode}\n{combined}"))

@@ -117,8 +117,38 @@ def _covered(prefixes: list[str], ws: str, norm: str) -> bool:
     return False
 
 
+#: Shell metacharacters that enable chaining, substitution or redirection.
+#: Commands are executed as argv lists with ``shell=False``; any of these in a
+#: request is refused outright rather than interpreted.
+SHELL_METACHARACTERS = ("&", "|", ";", "$", "`", ">", "<", "\n", "\r", "\x00")
+
+
+def parse_shell_argv(command: str) -> list[str]:
+    """Parse a shell request into an argv list, refusing shell metacharacters.
+
+    There is no shell between the request and the process, so quoting is only
+    used to group words. Anything that a POSIX shell would treat specially is
+    rejected before parsing, which closes allowlist-prefix bypasses such as
+    ``pytest && touch X``, ``pytest | tee out``, ``$(...)`` and backticks.
+    """
+    if not command.strip():
+        raise PermissionDenied("empty command")
+    for char in SHELL_METACHARACTERS:
+        if char in command:
+            raise PermissionDenied(
+                f"shell metacharacter {char!r} is not allowed in commands"
+            )
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise PermissionDenied(f"malformed command: {exc}") from exc
+    if not argv:
+        raise PermissionDenied("empty command")
+    return argv
+
+
 def _words(command: str) -> list[str]:
-    return [w.lower() for w in shlex.split(command, posix=True)]
+    return [w.lower() for w in parse_shell_argv(command)]
 
 
 def _matches_rule(words: list[str], rule: str) -> bool:
@@ -165,8 +195,6 @@ class PermissionChecker:
         """Validate a shell request against deny-then-allow rules. Raises if refused."""
         grant = self._grant(role)
         words = _words(command)
-        if not words:
-            raise PermissionDenied("empty command")
         for rule in (*GLOBAL_SHELL_DENY, *grant.shell_deny):
             if _matches_rule(words, rule):
                 raise PermissionDenied(

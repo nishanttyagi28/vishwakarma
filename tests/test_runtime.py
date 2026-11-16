@@ -6,6 +6,7 @@ against an httpx MockTransport.
 """
 
 import json
+import sys
 
 import httpx
 import pytest
@@ -95,6 +96,64 @@ def test_agent_can_read_files(tmp_path):
     agent, _ = runtime(tmp_path, script, grant())
     result = agent.run("run-1", "inspect module")
     assert result.status == COMPLETED
+
+
+def test_shell_runs_argv_without_a_shell_and_in_workspace(tmp_path):
+    """shell.run executes an argv list with shell=False, cwd = task workspace."""
+    (tmp_path / "run.py").write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path('cwd.txt').write_text(str(pathlib.Path.cwd()))\n"
+        "pathlib.Path('args.txt').write_text('|'.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    quoted_py = f'"{sys.executable}" run.py'
+    grant_ = grant(shell=(quoted_py,))
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("shell.run", {"command": quoted_py})
+    assert result.ok
+    assert (tmp_path / "cwd.txt").read_text() == str(tmp_path)
+    assert (tmp_path / "args.txt").read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "git status && touch pwned",
+        "git status || touch pwned",
+        "git status | touch pwned",
+        "git status; touch pwned",
+        "git status $(touch pwned)",
+        "git status `touch pwned`",
+        "git status > pwned",
+    ],
+)
+def test_shell_injection_attempts_are_denied_and_create_nothing(tmp_path, attack):
+    grant_ = grant(shell=("git status",))
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("shell.run", {"command": attack})
+    assert not result.ok and result.denied
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_builtin_fs_tools_require_the_fs_grant(tmp_path):
+    grant_ = grant()
+    grant_.tools = ["shell"]
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("fs.write", {"path": "src/a.py", "content": "1"})
+    assert not result.ok and result.denied
+    assert not (tmp_path / "src" / "a.py").exists()
+
+
+def test_shell_requires_the_shell_grant(tmp_path):
+    grant_ = grant()
+    grant_.tools = ["fs"]
+    checker = PermissionChecker({grant_.role: grant_}, {WS: str(tmp_path)})
+    tools = ToolExecutor(checker, grant_.role, default_workspace=WS)
+    result = tools.execute("shell.run", {"command": "git status"})
+    assert not result.ok and result.denied
 
 
 def test_agent_can_run_allowlisted_shell(tmp_path):

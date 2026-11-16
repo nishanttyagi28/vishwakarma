@@ -14,6 +14,7 @@ from forge.permissions import (
     PermissionDenied,
     RoleGrant,
     normalize_rel,
+    parse_shell_argv,
 )
 
 EXPECTED_ROLES = {
@@ -172,6 +173,37 @@ def test_devops_can_install_declared_dependencies(checker):
 def test_empty_command_is_denied(checker):
     with pytest.raises(PermissionDenied):
         checker.check_shell("backend", "   ")
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "pytest -q && touch pwned",
+        "pytest -q || touch pwned",
+        "pytest -q | tee /tmp/out",
+        "pytest -q; touch pwned",
+        "pytest -q & touch pwned",
+        "pytest $(touch pwned)",
+        "pytest `touch pwned`",
+        "pytest > /tmp/out",
+        "pytest < /etc/passwd",
+        "pytest\ntouch pwned",
+    ],
+)
+def test_shell_metacharacters_are_denied(checker, attack):
+    """Allowlist prefixes must not be bypassable with shell syntax."""
+    with pytest.raises(PermissionDenied):
+        checker.check_shell("backend", attack)
+
+
+def test_shell_parser_returns_argv_not_a_shell_string(checker):
+    assert parse_shell_argv('python -c "print(1)"') == ["python", "-c", "print(1)"]
+
+
+@pytest.mark.parametrize("command", ['python -c "unterminated', "pytest '"])
+def test_malformed_shell_quoting_is_denied(checker, command):
+    with pytest.raises(PermissionDenied):
+        checker.check_shell("backend", command)
 
 
 # --- deny overrides allow ----------------------------------------------------
