@@ -34,7 +34,8 @@ BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
 
 class DecisionJournal:
     def __init__(self, db_path: Path) -> None:
-        self._conn = sqlite3.connect(db_path)
+        self.db_path = Path(db_path)
+        self._conn = sqlite3.connect(self.db_path, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()

@@ -104,3 +104,18 @@ are green.
   `FORGE_OPENAI_MODEL`, `FORGE_OPENAI_API_KEY` and optional per-million-token
   rates; `chief run --model openai` selects it. All adapter tests use
   `httpx.MockTransport`; no live endpoint is called.
+
+## A-008 — Parallel dependency-DAG execution
+
+- Added `limits.max_parallel_workers` (default 1, configurable).
+- `run_roadmap` now schedules ready tasks in roadmap order in batches; a
+  dependent task becomes ready in the next batch after its dependencies are
+  APPROVED. Outcomes are always reported in submission order.
+- With `models_for_task` supplied, each worker gets isolated ledger, prompt
+  registry and journal connections plus fresh model backends. Without it, or
+  with one ready task, execution stays sequential because a shared backend is
+  sequential-use only.
+- SQLite connections use a 30s busy timeout for transient cross-worker
+  contention.
+- Deterministic tests cover independent tasks with two workers, dependent
+  batches, shared-backend fallback and `max_tasks` bounding.

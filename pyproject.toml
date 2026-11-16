@@ -58,3 +58,4 @@ skip_covered = true
 "tests/test_trace.py" = ["F811"]
 "tests/test_webui.py" = ["F811"]
 "tests/test_usage.py" = ["F811"]
+"tests/test_parallel.py" = ["F811"]

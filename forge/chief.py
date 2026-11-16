@@ -17,6 +17,8 @@ tools; reviewers are a different role than the implementer.
 """
 
 import json
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +40,7 @@ from forge.ledger import (
     KIND_REPORT,
     KIND_RETRY,
     KIND_VERDICT,
+    READY,
     LedgerError,
     TaskLedger,
     TaskRecord,
@@ -658,6 +661,79 @@ class ChiefEngineer:
             revision += 1
             last_id = attempt.parent_id
 
+    # --- parallel roadmap scheduling (A-008) -------------------------------------
+
+    def _worker_chief(self, models: dict[str, ModelBackend]) -> "ChiefEngineer":
+        """A cloned engine with its own SQLite connections for one worker thread."""
+        ledger = TaskLedger(self.ledger.db_path,
+                            max_revisions=self.ledger.max_revisions)
+        registry = PromptRegistry(self.registry.db_path,
+                                  max_revisions=self.registry.max_revisions)
+        journal = DecisionJournal(self.journal.db_path)
+        return ChiefEngineer(
+            self.config, ledger, registry, journal, self.checker, models,
+            transcript_dir=self.transcript_dir,
+            reviewer_role=self.reviewer_role, token_cap=self.token_cap,
+            max_steps_per_run=self.max_steps, mission_id=self.mission_id,
+        )
+
+    def _execute_isolated(self, task_id: str,
+                          models: dict[str, ModelBackend]) -> TaskOutcome:
+        worker = self._worker_chief(models)
+        try:
+            return worker.execute_task(task_id)
+        finally:
+            worker.ledger.close()
+            worker.registry.close()
+            worker.journal.close()
+
+    def _ready_specs(self, roadmap: Roadmap,
+                     attempted: set[str]) -> list[TaskSpec]:
+        ready: list[TaskSpec] = []
+        for spec in roadmap.tasks:
+            if spec.id in attempted:
+                continue
+            status = self.ledger.status_of(spec.id)
+            if status not in (BACKLOG, READY):
+                continue
+            if all(self.ledger.status_of(dep) == APPROVED for dep in spec.depends):
+                ready.append(spec)
+        return ready
+
+    def _run_batch(self, specs: list[TaskSpec], workers: int,
+                   models_for_task: Callable[[str], dict[str, ModelBackend]] | None,
+                   ) -> list[TaskOutcome]:
+        if models_for_task is None:
+            # One shared backend is sequential-use only; run in roadmap order.
+            return [self.execute_task(spec.id) for spec in specs]
+        if workers <= 1 or len(specs) <= 1:
+            # Still use the per-task factory, just without a thread pool.
+            return [self._execute_isolated(spec.id, models_for_task(spec.id))
+                    for spec in specs]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(self._execute_isolated, spec.id,
+                            models_for_task(spec.id))
+                for spec in specs
+            ]
+            # Collect in submission order: parallel execution, deterministic
+            # reported outcome order.
+            return [future.result() for future in futures]
+
+    def _iter_ready_batches(self, roadmap: Roadmap, max_tasks: int,
+                            workers: int,
+                            ) -> Iterable[list[TaskSpec]]:
+        attempted: set[str] = set()
+        executed = 0
+        while executed < max_tasks:
+            ready = self._ready_specs(roadmap, attempted)
+            if not ready:
+                break
+            batch = ready[: max_tasks - executed]
+            attempted.update(spec.id for spec in batch)
+            executed += len(batch)
+            yield batch
+
     # --- roadmap session ----------------------------------------------------------
 
     def sync_roadmap(self, roadmap: Roadmap) -> list[str]:
@@ -674,7 +750,17 @@ class ChiefEngineer:
         return created
 
     def run_roadmap(self, roadmap: Roadmap, max_tasks: int = 10,
-                    recover: bool = True) -> list[TaskOutcome]:
+                    recover: bool = True,
+                    models_for_task: Callable[[str], dict[str, ModelBackend]] | None = None,
+                    ) -> list[TaskOutcome]:
+        """Execute the dependency DAG, optionally with independent workers.
+
+        Ready tasks are batched in roadmap order. A batch runs sequentially
+        when the worker count is 1, when only one task is ready, or when no
+        per-task model factory is supplied (a shared backend is
+        sequential-use only). Dependents become ready in the next batch once
+        their dependencies are APPROVED.
+        """
         if not self.mission_id:
             self.mission_id = f"mission-{_tag()}"
         if recover:
@@ -697,21 +783,10 @@ class ChiefEngineer:
                     reversible=False,
                 )
         self.sync_roadmap(roadmap)
+        workers = min(self.config.limits.max_parallel_workers, max_tasks)
         outcomes: list[TaskOutcome] = []
-        executed = 0
-        for spec in roadmap.tasks:
-            if executed >= max_tasks:
-                break
-            status = self.ledger.status_of(spec.id)
-            if status in (APPROVED, BLOCKED_HUMAN):
-                continue
-            unmet = [d for d in spec.depends if self.ledger.status_of(d) != APPROVED]
-            if unmet:
-                outcomes.append(TaskOutcome(task_id=spec.id, status=status,
-                                            detail=f"waiting on {unmet}"))
-                continue
-            outcomes.append(self.execute_task(spec.id))
-            executed += 1
+        for batch in self._iter_ready_batches(roadmap, max_tasks, workers):
+            outcomes.extend(self._run_batch(batch, workers, models_for_task))
         return outcomes
 
     # --- reporting -------------------------------------------------------------------

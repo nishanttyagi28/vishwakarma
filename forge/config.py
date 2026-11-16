@@ -21,6 +21,9 @@ class LimitsConfig(BaseModel):
     max_steps_per_run: int = Field(default=30, ge=1)
     max_revisions_per_task: int = Field(default=2, ge=0)
     max_retries_per_run: int = Field(default=2, ge=0)
+    # Number of independent tasks the roadmap scheduler may run concurrently.
+    # Requires a per-task model factory; shared local backends stay sequential.
+    max_parallel_workers: int = Field(default=1, ge=1)
     # Optional budgets (None = unlimited). Checked by the Chief Engineer after
     # every recorded model call, per task and per mission.
     max_tokens_per_task: int | None = Field(default=None, ge=0)
