@@ -13,3 +13,6 @@ forge.sqlite*
 state/
 runs/
 node_modules/
+.coverage
+coverage.xml
+htmlcov/
