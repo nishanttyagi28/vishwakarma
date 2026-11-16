@@ -43,3 +43,20 @@ are green.
   prompting packages.
 - Replaced the vacuous revision-budget assertion with a real history check and
   added approval-invariant and atomic-claim tests.
+
+## A-004 — CLI and Chief Engineer refactor
+
+- `forge/cli.py` now has a parser builder plus per-command handlers
+  (`_handle_task`, `_handle_gate`, `_handle_recover`, `_handle_status`,
+  `_handle_trace`, `_handle_ui`, `_handle_chief`) instead of one large
+  function. `execute()` keeps its text return for callers;
+  `execute_result()` exposes a typed `exit_code`.
+- Gate failure now returns `EXIT_GATES_FAILED` (3) rather than matching the
+  "GATES FAILED" string in `main`.
+- `chief.py` splits `execute_task` into `_ensure_running`, `_prepare_task`,
+  `_attempt`, `_review_verdict`, `_approve_attempt` and `_apply_revision`.
+- Added the `forge = "forge.cli:main"` project script entry point.
+- `chief run --model fake|ollama` selects a scripted `FakeModel` or the local
+  Ollama backend; tests use `fake` only.
+- The Chief command reuses the CLI's ledger instance (single open/close) and
+  closes only its own registry and journal.

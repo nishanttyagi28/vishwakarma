@@ -17,6 +17,7 @@ tools; reviewers are a different role than the implementer.
 """
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -91,6 +92,15 @@ class TaskOutcome(BaseModel):
     status: str
     outcome_class: str = ""
     detail: str = ""
+
+
+@dataclass
+class _Attempt:
+    """Result of one specialist + gates + review attempt."""
+
+    outcome: TaskOutcome | None = None
+    feedback: str = ""
+    parent_id: str = ""
 
 
 def load_roadmap(path: Path) -> Roadmap:
@@ -321,52 +331,61 @@ class ChiefEngineer:
             model=model, status=status, verified=verified, detail=detail,
         )
 
-    def execute_task(self, task_id: str) -> TaskOutcome:
+    def _ensure_running(self, task_id: str) -> tuple[TaskRecord | None, TaskOutcome | None]:
+        """Promote/claim as needed; return (task, early outcome)."""
         task = self.ledger.get(task_id)
         if task.status == BACKLOG:
             try:
                 self.ledger.promote(task_id)
             except LedgerError as exc:
-                return TaskOutcome(task_id=task_id,
-                                   status=self.ledger.status_of(task_id),
-                                   detail=f"cannot promote: {exc}")
+                return None, TaskOutcome(
+                    task_id=task_id, status=self.ledger.status_of(task_id),
+                    detail=f"cannot promote: {exc}",
+                )
         status = self.ledger.status_of(task_id)
         if status in (BLOCKED_HUMAN, APPROVED):
-            return TaskOutcome(task_id=task_id, status=status,
-                               detail="terminal state, skipped")
+            return None, TaskOutcome(task_id=task_id, status=status,
+                                     detail="terminal state, skipped")
         if status != IN_PROGRESS:
             self.ledger.claim(task_id, f"chief-{_tag()}")
-        task = self.ledger.get(task_id)
+        return self.ledger.get(task_id), None
 
-        self.journal.record("dispatch", f"delegated {task_id} to "
-                            f"{task.assignee_role} via PA-prepared package",
-                            task_id=task_id)
-
+    def _prepare_task(
+        self, task: TaskRecord
+    ) -> tuple[TaskPackage | None, str | None, TaskOutcome | None]:
+        """Run PA curation and record its dispatch; return (package, id, failure)."""
+        self.journal.record(
+            "dispatch",
+            f"delegated {task.id} to {task.assignee_role} via PA-prepared package",
+            task_id=task.id,
+        )
         try:
             package, _pa_result = self.prepare_package(task)
         except (RuntimeError, PackageValidationError) as exc:
             fail_id = self._trace(
-                task_id, sender="chief", receiver="prompt_architect",
+                task.id, sender="chief", receiver="prompt_architect",
                 kind=KIND_FAILURE, parent=None, objective=task.title,
                 model=self._model_name("prompt_architect"), status="failed",
                 detail={"error": str(exc), "stage": "package_preparation"},
             )
-            out = self.ledger.escalate(task_id, "chief",
+            out = self.ledger.escalate(task.id, "chief",
                                        f"package preparation failed: {exc}")
-            self._trace(task_id, sender="chief", receiver="founder",
+            self._trace(task.id, sender="chief", receiver="founder",
                         kind=KIND_BLOCK, parent=fail_id, objective=task.title,
                         status="blocked", detail={"reason": str(exc)})
-            self.journal.record("escalate", f"PA pipeline failed for {task_id}: {exc}",
-                                task_id=task_id)
-            return TaskOutcome(task_id=task_id, status=out.status,
-                               outcome_class=OUTCOME_BLOCKED, detail=str(exc))
+            self.journal.record("escalate", f"PA pipeline failed for {task.id}: {exc}",
+                                task_id=task.id)
+            return None, None, TaskOutcome(
+                task_id=task.id, status=out.status,
+                outcome_class=OUTCOME_BLOCKED, detail=str(exc),
+            )
 
         # On retries (or any re-entry), the new handoff chain links onto the
         # previous one so the full task timeline stays one connected graph.
-        previous = self.ledger.handoffs_for(task_id)
+        previous = self.ledger.handoffs_for(task.id)
         pa_parent = previous[-1].id if previous else None
         pa_id = self._trace(
-            task_id, sender="chief", receiver="prompt_architect",
+            task.id, sender="chief", receiver="prompt_architect",
             kind=KIND_DISPATCH, parent=pa_parent, objective=task.title,
             prompt_id=package.prompt_id, prompt_version=package.prompt_version,
             context_refs=[cf.path for cf in package.context_files],
@@ -374,167 +393,201 @@ class ChiefEngineer:
             detail={"uncertainties": package.uncertainties,
                     "conflicts": package.conflicts},
         )
-        last_id: str | None = pa_id
+        return package, pa_id, None
+
+    def _specialist_failure(self, task: TaskRecord, dispatch_id: str,
+                            sp_result: RunResult) -> TaskOutcome:
+        self._trace(
+            task.id, sender=task.assignee_role, receiver="chief",
+            kind=KIND_FAILURE, parent=dispatch_id, objective=task.title,
+            status="failed",
+            detail={"error": sp_result.failure_reason,
+                    "steps_used": sp_result.steps_used,
+                    "tools": self._tool_summary(sp_result.transcript_path)},
+        )
+        out = self.ledger.escalate(
+            task.id, "chief",
+            f"specialist run failed: {sp_result.status} {sp_result.failure_reason}",
+        )
+        self._trace(task.id, sender="chief", receiver="founder",
+                    kind=KIND_BLOCK, parent=None, objective=task.title,
+                    status="blocked", detail={"reason": sp_result.failure_reason})
+        self.journal.record("escalate", f"specialist failed on {task.id}",
+                            task_id=task.id)
+        return TaskOutcome(task_id=task.id, status=out.status,
+                           outcome_class=OUTCOME_BLOCKED,
+                           detail=sp_result.failure_reason)
+
+    def _review_verdict(self, task: TaskRecord, review: RunResult,
+                        gates: GatesReport, dispatch_id: str) -> tuple[str, list[str], str]:
+        verdict = "ISSUES"
+        findings: list[str] = []
+        if review.status == COMPLETED and review.report is not None:
+            verdict = str(review.report.artifacts.get("verdict", "ISSUES"))
+            raw_findings = review.report.artifacts.get("findings", [])
+            findings = ([str(f) for f in raw_findings]
+                        if isinstance(raw_findings, list) else [])
+        actually_verified = gates.passed and verdict == "CLEAN"
+        verdict_id = self._trace(
+            task.id, sender=self.reviewer_role, receiver="chief",
+            kind=KIND_VERDICT, parent=dispatch_id, objective=task.title,
+            model=self._model_name(self.reviewer_role),
+            status="completed" if review.status == COMPLETED else "failed",
+            verified=actually_verified,
+            detail={"verdict": verdict, "findings": findings,
+                    "gates_passed": gates.passed,
+                    "tools": self._tool_summary(review.transcript_path)},
+        )
+        return verdict, findings, verdict_id
+
+    def _attempt(self, task: TaskRecord, package: TaskPackage, last_id: str,
+                 revision: int) -> _Attempt:
+        """One dispatch -> implementation -> gates -> independent review cycle."""
+        dispatch_id = self._trace(
+            task.id, sender="chief", receiver=task.assignee_role,
+            kind=KIND_DISPATCH, parent=last_id, objective=task.title,
+            prompt_id=package.prompt_id, prompt_version=package.prompt_version,
+            context_refs=[cf.path for cf in package.context_files],
+            model=self._model_name(task.assignee_role), status="pending",
+            detail={"revision": revision},
+        )
+        sp_result = self._run_specialist(
+            task, package, f"sp-{task.id}-{revision}-{_tag()}"
+        )
+        if sp_result.status != COMPLETED:
+            return _Attempt(outcome=self._specialist_failure(task, dispatch_id, sp_result))
+        if sp_result.report is None:
+            raise RuntimeError("specialist completed without a report")
+        # text output alone is never 'verified': the report handoff stays
+        # verified=False until gates and the independent review pass.
+        report_id = self._trace(
+            task.id, sender=task.assignee_role, receiver="chief",
+            kind=KIND_REPORT, parent=dispatch_id, objective=task.title,
+            status="completed", verified=False,
+            detail={
+                "summary": sp_result.report.summary,
+                "files_changed": sp_result.report.files_changed,
+                "tests_run": sp_result.report.tests_run,
+                "steps_used": sp_result.steps_used,
+                "tools": self._tool_summary(sp_result.transcript_path),
+            },
+        )
+        self.ledger.submit_for_review(
+            task.id, task.assignee_role, sp_result.report.summary
+        )
+        gate_ws = sorted({
+            cf.path.split(":", 1)[0] for cf in package.context_files if ":" in cf.path
+        }) or list(self.config.gates)
+        specs = [g for name, ws_gates in self.config.gates.items()
+                 if name in gate_ws for g in ws_gates]
+        gates = run_gates_for_task(self.ledger, task.id, specs, self.config.workspaces)
+        gates_id = self._trace(
+            task.id, sender="chief", receiver="gate_runner",
+            kind=KIND_GATES, parent=report_id, objective=task.title,
+            verified=gates.passed,
+            detail={"summary": gates.summary()},
+        )
+        review = self._run_reviewer(
+            task, sp_result, gates, f"rv-{task.id}-{revision}-{_tag()}"
+        )
+        rv_dispatch_id = self._trace(
+            task.id, sender="chief", receiver=self.reviewer_role,
+            kind=KIND_DISPATCH, parent=gates_id, objective=task.title,
+            context_refs=list(sp_result.report.files_changed),
+            model=self._model_name(self.reviewer_role), status="pending",
+            detail={"stage": "independent_review"},
+        )
+        verdict, findings, verdict_id = self._review_verdict(
+            task, review, gates, rv_dispatch_id
+        )
+        if gates.passed and verdict == "CLEAN":
+            return _Attempt(outcome=self._approve_attempt(task, package, revision))
+        self.ledger.back_to_review(task.id, "chief", "gates or review not clean")
+        combined = "; ".join(findings) or gates.summary()
+        return _Attempt(feedback=combined, parent_id=verdict_id)
+
+    def _approve_attempt(self, task: TaskRecord, package: TaskPackage,
+                         revision: int) -> TaskOutcome:
+        if task.human_gate:
+            self.journal.record(
+                "human_gate", f"{task.id} passed gates+review; awaiting founder",
+                task_id=task.id,
+            )
+            self.registry.record_outcome(
+                package.prompt_id, package.prompt_version,
+                f"chief-{task.id}", OUTCOME_BLOCKED,
+            )
+            return TaskOutcome(
+                task_id=task.id, status=self.ledger.status_of(task.id),
+                outcome_class=OUTCOME_BLOCKED,
+                detail="human-gated: awaiting founder approval",
+            )
+        self.ledger.approve(task.id, "chief", "gates green, review clean")
+        outcome_class = (
+            APPROVED_FIRST_PASS if revision == 0
+            else (REVISED_ONCE if revision == 1 else REVISED_TWICE)
+        )
+        self.registry.record_outcome(
+            package.prompt_id, package.prompt_version,
+            f"chief-{task.id}", outcome_class,
+        )
+        self.journal.record(
+            "approve", f"{task.id} APPROVED after {revision} revisions "
+            f"(gates green, review clean)", task_id=task.id,
+        )
+        return TaskOutcome(task_id=task.id, status=APPROVED,
+                           outcome_class=outcome_class)
+
+    def _apply_revision(self, task: TaskRecord, package: TaskPackage,
+                        attempt: _Attempt) -> TaskOutcome | None:
+        changed = self.ledger.request_changes(task.id, "chief", attempt.feedback)
+        retry_id = self._trace(
+            task.id, sender="chief", receiver=task.assignee_role,
+            kind=KIND_RETRY, parent=attempt.parent_id,
+            objective=task.title, status="completed",
+            detail={"feedback": attempt.feedback,
+                    "revision": changed.revisions_used},
+        )
+        if changed.status == BLOCKED_HUMAN:
+            self._trace(task.id, sender="chief", receiver="founder",
+                        kind=KIND_BLOCK, parent=retry_id,
+                        objective=task.title, status="blocked",
+                        detail={"reason": "revision budget exhausted"})
+            self.registry.record_outcome(
+                package.prompt_id, package.prompt_version,
+                f"chief-{task.id}", OUTCOME_BLOCKED,
+            )
+            return TaskOutcome(task_id=task.id, status=BLOCKED_HUMAN,
+                               outcome_class=OUTCOME_BLOCKED,
+                               detail="revision budget exhausted")
+        self.ledger.start_revision(task.id, task.assignee_role, attempt.feedback)
+        self.journal.record(
+            "revision", f"{task.id} revision {changed.revisions_used}: "
+            f"{attempt.feedback}", task_id=task.id,
+        )
+        attempt.parent_id = retry_id
+        return None
+
+    def execute_task(self, task_id: str) -> TaskOutcome:
+        task, skipped = self._ensure_running(task_id)
+        if skipped is not None:
+            return skipped
+        assert task is not None
+        package, pa_id, failure = self._prepare_task(task)
+        if failure is not None:
+            return failure
+        assert package is not None and pa_id is not None
+        last_id = pa_id
         revision = 0
         while True:
-            dispatch_id = self._trace(
-                task_id, sender="chief", receiver=task.assignee_role,
-                kind=KIND_DISPATCH, parent=last_id, objective=task.title,
-                prompt_id=package.prompt_id, prompt_version=package.prompt_version,
-                context_refs=[cf.path for cf in package.context_files],
-                model=self._model_name(task.assignee_role), status="pending",
-                detail={"revision": revision},
-            )
-            sp_result = self._run_specialist(
-                task, package, f"sp-{task_id}-{revision}-{_tag()}"
-            )
-            if sp_result.status != COMPLETED:
-                self._trace(
-                    task_id, sender=task.assignee_role, receiver="chief",
-                    kind=KIND_FAILURE, parent=dispatch_id, objective=task.title,
-                    status="failed",
-                    detail={"error": sp_result.failure_reason,
-                            "steps_used": sp_result.steps_used,
-                            "tools": self._tool_summary(sp_result.transcript_path)},
-                )
-                out = self.ledger.escalate(
-                    task_id, "chief",
-                    f"specialist run failed: {sp_result.status} "
-                    f"{sp_result.failure_reason}",
-                )
-                self._trace(task_id, sender="chief", receiver="founder",
-                            kind=KIND_BLOCK, parent=None, objective=task.title,
-                            status="blocked",
-                            detail={"reason": sp_result.failure_reason})
-                self.journal.record("escalate", f"specialist failed on {task_id}",
-                                    task_id=task_id)
-                return TaskOutcome(task_id=task_id, status=out.status,
-                                   outcome_class=OUTCOME_BLOCKED,
-                                   detail=sp_result.failure_reason)
-
-            if sp_result.report is None:
-                raise RuntimeError("specialist completed without a report")
-            # text output alone is never 'verified': the report handoff stays
-            # verified=False until gates and the independent review pass.
-            report_id = self._trace(
-                task_id, sender=task.assignee_role, receiver="chief",
-                kind=KIND_REPORT, parent=dispatch_id, objective=task.title,
-                status="completed", verified=False,
-                detail={
-                    "summary": sp_result.report.summary,
-                    "files_changed": sp_result.report.files_changed,
-                    "tests_run": sp_result.report.tests_run,
-                    "steps_used": sp_result.steps_used,
-                    "tools": self._tool_summary(sp_result.transcript_path),
-                },
-            )
-            self.ledger.submit_for_review(
-                task_id, task.assignee_role, sp_result.report.summary
-            )
-            gate_ws = sorted({
-                cf.path.split(":", 1)[0] for cf in package.context_files if ":" in cf.path
-            }) or list(self.config.gates)
-            specs = [g for name, ws_gates in self.config.gates.items()
-                     if name in gate_ws for g in ws_gates]
-            gates = run_gates_for_task(
-                self.ledger, task_id, specs, self.config.workspaces
-            )
-            gates_id = self._trace(
-                task_id, sender="chief", receiver="gate_runner",
-                kind=KIND_GATES, parent=report_id, objective=task.title,
-                verified=gates.passed,
-                detail={"summary": gates.summary()},
-            )
-            review = self._run_reviewer(
-                task, sp_result, gates, f"rv-{task_id}-{revision}-{_tag()}"
-            )
-            rv_dispatch_id = self._trace(
-                task_id, sender="chief", receiver=self.reviewer_role,
-                kind=KIND_DISPATCH, parent=gates_id, objective=task.title,
-                context_refs=list(sp_result.report.files_changed),
-                model=self._model_name(self.reviewer_role), status="pending",
-                detail={"stage": "independent_review"},
-            )
-            verdict = "ISSUES"
-            findings: list[str] = []
-            if review.status == COMPLETED and review.report is not None:
-                verdict = str(review.report.artifacts.get("verdict", "ISSUES"))
-                raw_findings = review.report.artifacts.get("findings", [])
-                findings = ([str(f) for f in raw_findings]
-                            if isinstance(raw_findings, list) else [])
-            actually_verified = gates.passed and verdict == "CLEAN"
-            verdict_id = self._trace(
-                task_id, sender=self.reviewer_role, receiver="chief",
-                kind=KIND_VERDICT, parent=rv_dispatch_id, objective=task.title,
-                model=self._model_name(self.reviewer_role),
-                status="completed" if review.status == COMPLETED else "failed",
-                verified=actually_verified,
-                detail={"verdict": verdict, "findings": findings,
-                        "gates_passed": gates.passed,
-                        "tools": self._tool_summary(review.transcript_path)},
-            )
-
-            if gates.passed and verdict == "CLEAN":
-                if task.human_gate:
-                    self.journal.record(
-                        "human_gate",
-                        f"{task_id} passed gates+review; awaiting founder",
-                        task_id=task_id,
-                    )
-                    self.registry.record_outcome(
-                        package.prompt_id, package.prompt_version,
-                        f"chief-{task_id}", OUTCOME_BLOCKED,
-                    )
-                    return TaskOutcome(
-                        task_id=task_id, status=self.ledger.status_of(task_id),
-                        outcome_class=OUTCOME_BLOCKED,
-                        detail="human-gated: awaiting founder approval",
-                    )
-                self.ledger.approve(task_id, "chief", "gates green, review clean")
-                outcome_class = (
-                    APPROVED_FIRST_PASS if revision == 0
-                    else (REVISED_ONCE if revision == 1 else REVISED_TWICE)
-                )
-                self.registry.record_outcome(
-                    package.prompt_id, package.prompt_version,
-                    f"chief-{task_id}", outcome_class,
-                )
-                self.journal.record(
-                    "approve", f"{task_id} APPROVED after {revision} revisions "
-                    f"(gates green, review clean)", task_id=task_id,
-                )
-                return TaskOutcome(task_id=task_id, status=APPROVED,
-                                   outcome_class=outcome_class)
-
-            # not approved: bounded revision (the ledger escalates at budget)
-            self.ledger.back_to_review(task_id, "chief", "gates or review not clean")
-            combined = "; ".join(findings) or gates.summary()
-            changed = self.ledger.request_changes(task_id, "chief", combined)
-            retry_id = self._trace(
-                task_id, sender="chief", receiver=task.assignee_role,
-                kind=KIND_RETRY, parent=verdict_id,
-                objective=task.title, status="completed",
-                detail={"feedback": combined, "revision": revision + 1},
-            )
-            if changed.status == BLOCKED_HUMAN:
-                self._trace(task_id, sender="chief", receiver="founder",
-                            kind=KIND_BLOCK, parent=retry_id,
-                            objective=task.title, status="blocked",
-                            detail={"reason": "revision budget exhausted"})
-                self.registry.record_outcome(
-                    package.prompt_id, package.prompt_version,
-                    f"chief-{task_id}", OUTCOME_BLOCKED,
-                )
-                return TaskOutcome(task_id=task_id, status=BLOCKED_HUMAN,
-                                   outcome_class=OUTCOME_BLOCKED,
-                                   detail="revision budget exhausted")
+            attempt = self._attempt(task, package, last_id, revision)
+            if attempt.outcome is not None:
+                return attempt.outcome
+            blocked = self._apply_revision(task, package, attempt)
+            if blocked is not None:
+                return blocked
             revision += 1
-            self.ledger.start_revision(task_id, task.assignee_role, combined)
-            self.journal.record(
-                "revision", f"{task_id} revision {revision}: {combined}",
-                task_id=task_id,
-            )
-            last_id = retry_id
+            last_id = attempt.parent_id
 
     # --- roadmap session ----------------------------------------------------------
 

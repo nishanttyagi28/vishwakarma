@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from forge.cli import execute
+from forge.cli import EXIT_GATES_FAILED, execute, execute_result
 from forge.config import GateSpec, load_config
 from forge.gates import run_gate, run_gates_for_task
 from forge.ledger import APPROVED, TESTING, LedgerError, TaskLedger
@@ -187,8 +187,10 @@ def test_cli_failed_gate_exits_report_but_state_is_visible(cli_env, tmp_path):
     execute(["task", "claim", "T-1", "--run-id", "run-1"], config_path, db_path)
     execute(["task", "submit", "T-1", "--actor", "backend", "--summary", "done"],
             config_path, db_path)
-    out = execute(["gate", "run", "T-1", "--workspace", "proj"], config_path, db_path)
-    assert "GATES FAILED" in out
+    result = execute_result(["gate", "run", "T-1", "--workspace", "proj"],
+                            config_path, db_path)
+    assert "GATES FAILED" in result.output
+    assert result.exit_code == EXIT_GATES_FAILED  # typed code, not string matching
     ledger = TaskLedger(db_path)
     try:
         assert ledger.status_of("T-1") == TESTING  # state visible, nothing hidden
@@ -293,3 +295,25 @@ def test_workspace_paths_resolve_relative_to_config(tmp_path):
     }), encoding="utf-8")
     config = load_config(path)
     assert Path(config.workspaces["proj"]) == (tmp_path / "proj").resolve()
+
+
+def test_pyproject_declares_forge_entry_point():
+    import tomllib
+
+    from forge.cli import REPO_ROOT
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["project"]["scripts"]["forge"] == "forge.cli:main"
+
+
+def test_chief_run_accepts_fake_model_flag(cli_env):
+    config_path, db_path = cli_env
+    execute(["task", "create", "--id", "M-1", "--title", "t", "--role", "backend"],
+            config_path, db_path)
+    execute(["task", "promote", "M-1"], config_path, db_path)
+    # An unfinished task fails later in the run, but the fake backend must be
+    # selected without touching Ollama. The PA then raises script-exhausted.
+    out = execute(["chief", "run", "--task", "M-1", "--model", "fake"],
+                  config_path, db_path)
+    assert "M-1 ->" in out
+    assert "BLOCKED_HUMAN" in out
