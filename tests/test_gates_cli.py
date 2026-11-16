@@ -317,3 +317,20 @@ def test_chief_run_accepts_fake_model_flag(cli_env):
                   config_path, db_path)
     assert "M-1 ->" in out
     assert "BLOCKED_HUMAN" in out
+
+
+def test_cli_trace_show_includes_usage(cli_env):
+    config_path, db_path = cli_env
+    execute(["task", "create", "--id", "TR-1", "--title", "t", "--role", "backend"],
+            config_path, db_path)
+    ledger = TaskLedger(db_path)
+    try:
+        ledger.record_usage("TR-1", role="backend", model="m", mission_id="m-9",
+                            prompt_tokens=100, completion_tokens=25,
+                            cost_usd=0.0005)
+    finally:
+        ledger.close()
+    out = execute(["trace", "show", "TR-1"], config_path, db_path)
+    assert "usage:" in out
+    assert "prompt=100 completion=25 total=125" in out
+    assert "mission=m-9" in out

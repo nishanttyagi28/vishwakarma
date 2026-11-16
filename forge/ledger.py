@@ -106,6 +106,34 @@ class GateResult(BaseModel):
     at: str
 
 
+class UsageRecord(BaseModel):
+    """One model call's token/cost accounting (A-007)."""
+
+    task_id: str
+    mission_id: str = ""
+    role: str
+    model: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+    at: str = ""
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+class UsageSummary(BaseModel):
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 #: handoff kinds (Forge Trace, P-001)
 KIND_DISPATCH = "dispatch"  # sender hands work to a receiver agent
 KIND_REPORT = "report"  # receiver returned an implementation report
@@ -184,6 +212,25 @@ BEGIN SELECT RAISE(ABORT, 'gate_results are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS gate_results_no_delete
 BEFORE DELETE ON gate_results
 BEGIN SELECT RAISE(ABORT, 'gate_results are append-only'); END;
+CREATE TABLE IF NOT EXISTS usage_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    mission_id TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_events_task ON usage_events(task_id);
+CREATE INDEX IF NOT EXISTS usage_events_mission ON usage_events(mission_id);
+CREATE TRIGGER IF NOT EXISTS usage_events_no_update
+BEFORE UPDATE ON usage_events
+BEGIN SELECT RAISE(ABORT, 'usage events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS usage_events_no_delete
+BEFORE DELETE ON usage_events
+BEGIN SELECT RAISE(ABORT, 'usage events are append-only'); END;
 CREATE TABLE IF NOT EXISTS handoffs (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,
@@ -552,6 +599,66 @@ class TaskLedger:
             for r in rows
         ]
 
+    # --- cost/token usage (A-007) --------------------------------------------
+
+    def record_usage(self, task_id: str, *, role: str, model: str = "",
+                     prompt_tokens: int = 0, completion_tokens: int = 0,
+                     cost_usd: float = 0.0, mission_id: str = "") -> UsageRecord:
+        """Append one usage event. Zero-token calls are ignored."""
+        self._get_row(task_id)
+        if prompt_tokens < 0 or completion_tokens < 0 or cost_usd < 0:
+            raise LedgerError("usage values must be non-negative")
+        now = _now()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO usage_events (task_id, mission_id, role, model,"
+                " prompt_tokens, completion_tokens, cost_usd, at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, mission_id, role, model, prompt_tokens,
+                 completion_tokens, cost_usd, now),
+            )
+        return UsageRecord(
+            task_id=task_id, mission_id=mission_id, role=role, model=model,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            cost_usd=cost_usd, at=now,
+        )
+
+    def usage_for_task(self, task_id: str) -> list[UsageRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM usage_events WHERE task_id = ? ORDER BY seq",
+            (task_id,),
+        ).fetchall()
+        return [_usage_from_row(r) for r in rows]
+
+    def usage_for_mission(self, mission_id: str) -> list[UsageRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM usage_events WHERE mission_id = ? ORDER BY seq",
+            (mission_id,),
+        ).fetchall()
+        return [_usage_from_row(r) for r in rows]
+
+    def usage_tasks(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT task_id FROM usage_events ORDER BY task_id"
+        ).fetchall()
+        return [str(r["task_id"]) for r in rows]
+
+    def usage_missions(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT mission_id FROM usage_events ORDER BY mission_id"
+        ).fetchall()
+        return [str(r["mission_id"]) for r in rows]
+
+    @staticmethod
+    def summarize_usage(records: list[UsageRecord]) -> UsageSummary:
+        summary = UsageSummary()
+        for record in records:
+            summary.calls += 1
+            summary.prompt_tokens += record.prompt_tokens
+            summary.completion_tokens += record.completion_tokens
+            summary.cost_usd += record.cost_usd
+        return summary
+
     # --- Forge Trace (P-001): agent-to-agent boundary events -----------------
 
     def record_handoff(
@@ -630,6 +737,19 @@ class TaskLedger:
         if row is None:
             raise LedgerError(f"unknown handoff: {hid!r}")
         return _handoff_from_row(row)
+
+
+def _usage_from_row(r: sqlite3.Row) -> UsageRecord:
+    return UsageRecord(
+        task_id=r["task_id"],
+        mission_id=r["mission_id"],
+        role=r["role"],
+        model=r["model"],
+        prompt_tokens=r["prompt_tokens"],
+        completion_tokens=r["completion_tokens"],
+        cost_usd=float(r["cost_usd"]),
+        at=r["at"],
+    )
 
 
 def _handoff_from_row(r: sqlite3.Row) -> HandoffRecord:

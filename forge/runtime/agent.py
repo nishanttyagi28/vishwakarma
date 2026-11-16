@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from forge.model.base import Message, ModelBackend
+from forge.model.base import Message, ModelBackend, ModelUsage
 from forge.runtime.tools import ToolExecutor
 
 MAX_MALFORMED = 3
@@ -47,6 +47,9 @@ class RunResult(BaseModel):
     denials: int = 0
     transcript_path: str
     failure_reason: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 def _now() -> str:
@@ -96,6 +99,7 @@ class AgentRuntime:
         self.malformed_turns = 0
         self.denials = 0
         self.steps_used = 0
+        self.usage = ModelUsage()
 
     # --- transcript ----------------------------------------------------------
 
@@ -114,6 +118,7 @@ class AgentRuntime:
         self.malformed_turns = 0
         self.denials = 0
         self.steps_used = 0
+        self.usage = ModelUsage()
         path = self._transcript(run_id)
         self._log(path, "run_start", {"run_id": run_id, "role": self.role})
 
@@ -130,7 +135,14 @@ class AgentRuntime:
                 self._log(path, "model_error", {"error": str(exc)})
                 return self._result(run_id, path, FAILED_MODEL_ERROR, str(exc))
 
-            self._log(path, "model_raw", {"content": raw})
+            usage = getattr(self.model, "last_usage", ModelUsage())
+            self.usage = self.usage + usage
+            self._log(path, "model_raw", {
+                "content": raw,
+                "usage": {"prompt": usage.prompt_tokens,
+                          "completion": usage.completion_tokens,
+                          "cost_usd": usage.cost_usd},
+            })
             try:
                 turn = json.loads(raw)
                 if not isinstance(turn, dict):
@@ -218,4 +230,7 @@ class AgentRuntime:
             denials=self.denials,
             transcript_path=str(path),
             failure_reason=reason,
+            prompt_tokens=self.usage.prompt_tokens,
+            completion_tokens=self.usage.completion_tokens,
+            cost_usd=self.usage.cost_usd,
         )

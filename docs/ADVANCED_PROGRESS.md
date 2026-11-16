@@ -86,3 +86,21 @@ are green.
   helpers (`iter_scannable_files`, `_grants_snapshot`).
 - Added a hygiene test that keeps the license, CI matrix and strict
   mypy/coverage settings honest.
+
+## A-007 — Cost/token budgets and OpenAI-compatible models
+
+- Added append-only `usage_events` to the ledger with per-task and per-mission
+  token/cost aggregation (`record_usage`, `usage_for_task`,
+  `usage_for_mission`, `summarize_usage`).
+- `ModelUsage` is accumulated by `AgentRuntime`; Ollama reads
+  `prompt_eval_count`/`eval_count`, and `FakeModel` accepts scripted usage.
+- Chief Engineer records PA, specialist and reviewer usage under a mission id
+  and enforces optional `max_tokens_per_task`, `max_tokens_per_mission`,
+  `max_cost_usd_per_task` and `max_cost_usd_per_mission` budgets. A breach
+  escalates to BLOCKED_HUMAN with the usage still recorded.
+- `forge trace show TASK` prints usage lines; the UI shows per-task usage and
+  a mission usage summary.
+- Added `OpenAICompatibleBackend` configured by `FORGE_OPENAI_BASE_URL`,
+  `FORGE_OPENAI_MODEL`, `FORGE_OPENAI_API_KEY` and optional per-million-token
+  rates; `chief run --model openai` selects it. All adapter tests use
+  `httpx.MockTransport`; no live endpoint is called.

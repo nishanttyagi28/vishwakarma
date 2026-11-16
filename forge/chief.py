@@ -42,7 +42,7 @@ from forge.ledger import (
     TaskLedger,
     TaskRecord,
 )
-from forge.model.base import Message, ModelBackend
+from forge.model.base import Message, ModelBackend, ModelUsage
 from forge.permissions import PermissionChecker
 from forge.prompting import (
     APPROVED_FIRST_PASS,
@@ -121,6 +121,7 @@ class ChiefEngineer:
         reviewer_role: str = "qa",
         token_cap: int = 12000,
         max_steps_per_run: int = 30,
+        mission_id: str = "",
     ) -> None:
         self.config = config
         self.ledger = ledger
@@ -132,6 +133,7 @@ class ChiefEngineer:
         self.reviewer_role = reviewer_role
         self.token_cap = token_cap
         self.max_steps = max_steps_per_run
+        self.mission_id = mission_id
 
     # --- PA pipeline ----------------------------------------------------------
     # ADR-0004: PA curation is single-shot structured judgement, not a ReAct
@@ -141,7 +143,7 @@ class ChiefEngineer:
     # the bounded loop because they act with tools.
 
     def _single_shot_json(self, model: ModelBackend, prompt: str,
-                          attempts: int = 3) -> dict[str, object]:
+                          attempts: int = 3) -> tuple[dict[str, object], ModelUsage]:
         """One-shot structured judgement: ask, validate, retry with the error."""
         messages: list[Message] = [
             {"role": "system",
@@ -149,13 +151,15 @@ class ChiefEngineer:
             {"role": "user", "content": prompt},
         ]
         last_error = ""
+        usage = ModelUsage()
         for _ in range(attempts):
             raw = model.chat(messages, json_mode=True)
+            usage = usage + getattr(model, "last_usage", ModelUsage())
             try:
                 data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise ValueError("reply is not a JSON object")
-                return data
+                return data, usage
             except ValueError as exc:
                 last_error = str(exc)
                 messages.append({"role": "assistant", "content": raw})
@@ -185,9 +189,12 @@ class ChiefEngineer:
         attempt_no = task.retries_used
         prompt_id = f"p-{task.id}" if attempt_no == 0 else f"p-{task.id}-r{attempt_no}"
         feedback = ""
+        pa_usage = ModelUsage()
         for correction in range(2):
-            data = self._single_shot_json(self.models["prompt_architect"],
-                                          directive + feedback)
+            data, call_usage = self._single_shot_json(
+                self.models["prompt_architect"], directive + feedback
+            )
+            pa_usage = pa_usage + call_usage
             raw_ctx = data.get("context_selected", [])
             unc = data.get("uncertainties", [])
             conf = data.get("conflicts", [])
@@ -225,6 +232,9 @@ class ChiefEngineer:
                 run_id=f"pa-{task.id}-{_tag()}", role="prompt_architect",
                 status=COMPLETED, report=None, steps_used=correction + 1,
                 transcript_path="",
+                prompt_tokens=pa_usage.prompt_tokens,
+                completion_tokens=pa_usage.completion_tokens,
+                cost_usd=pa_usage.cost_usd,
             )
         raise RuntimeError("package validation failed after PA correction attempt")
 
@@ -294,6 +304,50 @@ class ChiefEngineer:
         )
         return agent.run(run_id, context)
 
+    # --- cost/token budgets (A-007) ---------------------------------------------
+
+    def _record_usage(self, task_id: str, run: RunResult, role: str) -> None:
+        if (run.prompt_tokens == 0 and run.completion_tokens == 0
+                and run.cost_usd == 0.0):
+            return
+        self.ledger.record_usage(
+            task_id, role=role, model=self._model_name(role),
+            prompt_tokens=run.prompt_tokens,
+            completion_tokens=run.completion_tokens,
+            cost_usd=run.cost_usd, mission_id=self.mission_id,
+        )
+
+    def _budget_reason(self, task_id: str) -> str | None:
+        """Return a human-readable budget breach, or None when within limits."""
+        limits = self.config.limits
+        task_usage = self.ledger.summarize_usage(self.ledger.usage_for_task(task_id))
+        mission_usage = self.ledger.summarize_usage(
+            self.ledger.usage_for_mission(self.mission_id)
+        )
+        checks = (
+            ("task tokens", task_usage.total_tokens, limits.max_tokens_per_task),
+            ("mission tokens", mission_usage.total_tokens,
+             limits.max_tokens_per_mission),
+            ("task cost USD", task_usage.cost_usd, limits.max_cost_usd_per_task),
+            ("mission cost USD", mission_usage.cost_usd,
+             limits.max_cost_usd_per_mission),
+        )
+        for label, used, limit in checks:
+            if limit is not None and used > limit:
+                return f"{label} budget exceeded: used {used:g}, limit {limit:g}"
+        return None
+
+    def _budget_block(self, task: TaskRecord, reason: str,
+                      parent: str | None) -> TaskOutcome:
+        self._trace(task.id, sender="chief", receiver="founder",
+                    kind=KIND_BLOCK, parent=parent, objective=task.title,
+                    status="blocked", detail={"reason": reason})
+        out = self.ledger.escalate(task.id, "chief", reason)
+        self.journal.record("escalate", f"budget exceeded on {task.id}: {reason}",
+                            task_id=task.id)
+        return TaskOutcome(task_id=task.id, status=out.status,
+                           outcome_class=OUTCOME_BLOCKED, detail=reason)
+
     # --- core loop --------------------------------------------------------------
 
     # --- Forge Trace (P-001) ---------------------------------------------------
@@ -361,7 +415,7 @@ class ChiefEngineer:
             task_id=task.id,
         )
         try:
-            package, _pa_result = self.prepare_package(task)
+            package, pa_result = self.prepare_package(task)
         except (RuntimeError, PackageValidationError) as exc:
             fail_id = self._trace(
                 task.id, sender="chief", receiver="prompt_architect",
@@ -394,6 +448,10 @@ class ChiefEngineer:
             detail={"uncertainties": package.uncertainties,
                     "conflicts": package.conflicts},
         )
+        self._record_usage(task.id, pa_result, "prompt_architect")
+        reason = self._budget_reason(task.id)
+        if reason:
+            return None, None, self._budget_block(task, reason, pa_id)
         return package, pa_id, None
 
     def _specialist_failure(self, task: TaskRecord, dispatch_id: str,
@@ -455,6 +513,10 @@ class ChiefEngineer:
         sp_result = self._run_specialist(
             task, package, f"sp-{task.id}-{revision}-{_tag()}"
         )
+        self._record_usage(task.id, sp_result, task.assignee_role)
+        reason = self._budget_reason(task.id)
+        if reason:
+            return _Attempt(outcome=self._budget_block(task, reason, dispatch_id))
         if sp_result.status != COMPLETED:
             return _Attempt(outcome=self._specialist_failure(task, dispatch_id, sp_result))
         if sp_result.report is None:
@@ -498,6 +560,10 @@ class ChiefEngineer:
             model=self._model_name(self.reviewer_role), status="pending",
             detail={"stage": "independent_review"},
         )
+        self._record_usage(task.id, review, self.reviewer_role)
+        reason = self._budget_reason(task.id)
+        if reason:
+            return _Attempt(outcome=self._budget_block(task, reason, rv_dispatch_id))
         verdict, findings, verdict_id = self._review_verdict(
             task, review, gates, rv_dispatch_id
         )
@@ -570,6 +636,8 @@ class ChiefEngineer:
         return None
 
     def execute_task(self, task_id: str) -> TaskOutcome:
+        if not self.mission_id:
+            self.mission_id = f"mission-{_tag()}"
         task, skipped = self._ensure_running(task_id)
         if skipped is not None:
             return skipped
@@ -607,6 +675,8 @@ class ChiefEngineer:
 
     def run_roadmap(self, roadmap: Roadmap, max_tasks: int = 10,
                     recover: bool = True) -> list[TaskOutcome]:
+        if not self.mission_id:
+            self.mission_id = f"mission-{_tag()}"
         if recover:
             from forge.recovery import plan_recovery
 

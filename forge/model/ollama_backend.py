@@ -2,7 +2,7 @@
 
 import httpx
 
-from forge.model.base import Message, ModelBackendError
+from forge.model.base import Message, ModelBackendError, ModelUsage
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 
@@ -24,6 +24,7 @@ class OllamaBackend:
     ) -> None:
         self.model = model
         self.timeout_s = timeout_s
+        self.last_usage = ModelUsage()
         # base_url is always set so relative paths like "/api/chat" resolve,
         # including with a MockTransport in tests.
         self._client = httpx.Client(base_url=base_url, transport=transport, timeout=timeout_s)
@@ -48,4 +49,10 @@ class OllamaBackend:
             raise ModelBackendError(f"unexpected Ollama response shape: {exc}") from exc
         if not isinstance(content, str):
             raise ModelBackendError("Ollama message content is not a string")
+        prompt_tokens = int(body.get("prompt_eval_count", 0) or 0)
+        completion_tokens = int(body.get("eval_count", 0) or 0)
+        self.last_usage = ModelUsage(
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            cost_usd=0.0,  # local model: no per-token charge
+        )
         return content

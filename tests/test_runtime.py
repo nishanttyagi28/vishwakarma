@@ -301,6 +301,21 @@ def test_ollama_backend_without_json_mode_omits_format():
     assert "format" not in captured["payload"]
 
 
+def test_ollama_records_token_usage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "message": {"content": "ok"},
+            "prompt_eval_count": 42,
+            "eval_count": 7,
+        })
+
+    backend = OllamaBackend(model="m", transport=httpx.MockTransport(handler))
+    backend.chat([{"role": "user", "content": "hi"}])
+    assert backend.last_usage.prompt_tokens == 42
+    assert backend.last_usage.completion_tokens == 7
+    assert backend.last_usage.cost_usd == 0.0
+
+
 def test_ollama_backend_http_error_raises_backend_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})

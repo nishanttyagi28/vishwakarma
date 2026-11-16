@@ -34,6 +34,8 @@ _PAGE = """<!doctype html>
 <body><div class="wrap">
 <h1>Forge Dashboard</h1>
 <p>read-only ledger view &middot; ledger: {ledger_path}</p>
+<h2>Mission usage</h2>
+{mission_usage}
 <h2>Tasks</h2>
 <table><tr><th>id</th><th>status</th><th>role</th><th>revisions</th>
 <th>retries</th><th>updated</th><th></th></tr>
@@ -46,7 +48,7 @@ _TASK_ROW = ("<tr><td>{id}</td><td>{status}</td><td>{role}</td>"
              "<td>{rev}</td><td>{ret}</td><td>{upd}</td>"
              '<td><a href="/?task={id}">trace</a></td></tr>')
 
-_SECTION = "<h2>Forge Trace: {tid} — {title}</h2>\n{handoffs}\n{gates}\n{trans}"
+_SECTION = "<h2>Forge Trace: {tid} — {title}</h2>\n{handoffs}\n{gates}\n{usage}\n{trans}"
 
 _HANDOFF_HEAD = ("<table><tr><th>#</th><th>at</th><th>kind</th><th>sender</th>"
                  "<th>receiver</th><th>status</th><th>verified</th>"
@@ -54,6 +56,16 @@ _HANDOFF_HEAD = ("<table><tr><th>#</th><th>at</th><th>kind</th><th>sender</th>"
                  "<th>detail</th></tr>")
 _GATE_LINE = "<li>{sha} &middot; {at}<br><code>{payload}</code></li>"
 _TRANS_LINE = "<li>{frm} &rarr; {to} by {actor}: {reason} <i>({at})</i></li>"
+_USAGE_HEAD = ("<table><tr><th>mission</th><th>calls</th><th>prompt</th>"
+               "<th>completion</th><th>total</th><th>cost USD</th></tr>")
+_USAGE_ROW = ("<tr><td>{mission}</td><td>{calls}</td><td>{prompt}</td>"
+              "<td>{completion}</td><td>{total}</td><td>{cost:.6f}</td></tr>")
+_TASK_USAGE_HEAD = ("<table><tr><th>at</th><th>role</th><th>model</th>"
+                    "<th>prompt</th><th>completion</th><th>total</th>"
+                    "<th>cost USD</th></tr>")
+_TASK_USAGE_ROW = ("<tr><td>{at}</td><td>{role}</td><td>{model}</td>"
+                   "<td>{prompt}</td><td>{completion}</td><td>{total}</td>"
+                   "<td>{cost:.6f}</td></tr>")
 
 
 def _cls(status: str) -> str:
@@ -81,6 +93,17 @@ def build_dashboard_html(ledger: TaskLedger, task_id: str | None = None) -> str:
             ret=t.retries_used, upd=html.escape(t.updated_at),
         ) for t in tasks
     )
+    mission_rows = []
+    for mission in ledger.usage_missions():
+        summary = ledger.summarize_usage(ledger.usage_for_mission(mission))
+        mission_rows.append(_USAGE_ROW.format(
+            mission=html.escape(mission or "-"), calls=summary.calls,
+            prompt=summary.prompt_tokens, completion=summary.completion_tokens,
+            total=summary.total_tokens, cost=summary.cost_usd,
+        ))
+    mission_usage = ((_USAGE_HEAD + "".join(mission_rows) + "</table>")
+                     if mission_rows else "<p>no model usage recorded</p>")
+
     sections = ""
     for t in tasks:
         handoffs = ledger.handoffs_for(t.id)
@@ -114,9 +137,21 @@ def build_dashboard_html(ledger: TaskLedger, task_id: str | None = None) -> str:
             for tr in ledger.history(t.id)
         )
         trans_html = f"<h3>State transitions</h3><ul>{trans}</ul>" if trans else ""
+        usage_rows = "".join(
+            _TASK_USAGE_ROW.format(
+                at=html.escape(u.at), role=html.escape(u.role),
+                model=html.escape(u.model), prompt=u.prompt_tokens,
+                completion=u.completion_tokens, total=u.total_tokens,
+                cost=u.cost_usd,
+            )
+            for u in ledger.usage_for_task(t.id)
+        )
+        usage_html = (f"<h3>Token/cost usage</h3>{_TASK_USAGE_HEAD}{usage_rows}"
+                      "</table>") if usage_rows else ""
         sections += _SECTION.format(
             tid=html.escape(t.id), title=html.escape(t.title),
             handoffs=handoff_html, gates=gates_html, trans=trans_html,
+            usage=usage_html,
         )
     if task_id is not None and not tasks:
         sections = (f"<p>no such task: {html.escape(task_id)}</p>"
@@ -125,6 +160,7 @@ def build_dashboard_html(ledger: TaskLedger, task_id: str | None = None) -> str:
         sections = '<p><a href="/">back to all tasks</a></p>' + sections
     return _PAGE.format(
         ledger_path=html.escape(str(ledger.db_path)),
+        mission_usage=mission_usage,
         task_rows=task_rows, sections=sections,
     )
 

@@ -176,8 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     csub = chief.add_subparsers(dest="ccmd", required=True)
     p_crun = csub.add_parser("run")
     p_crun.add_argument("--task", required=True)
-    p_crun.add_argument("--model", choices=["fake", "ollama"], default="ollama",
-                        help="model backend; 'fake' is scripted/no-network")
+    p_crun.add_argument("--model", choices=["fake", "ollama", "openai"],
+                        default="ollama",
+                        help="model backend; 'fake' is scripted/no-network, "
+                             "'openai' uses FORGE_OPENAI_* env configuration")
     csub.add_parser("report")
     return parser
 
@@ -343,6 +345,12 @@ def _handle_trace(args: argparse.Namespace, ledger: TaskLedger) -> list[str]:
                    f"{h.kind} status={h.status} verified={h.verified} "
                    f"model={h.model} prompt={h.prompt_id}v{h.prompt_version} "
                    f"refs={h.context_refs}{detail}")
+        for u in ledger.usage_for_task(args.task_id):
+            _print(out,
+                   f"  usage: {u.at} {u.role} model={u.model} "
+                   f"prompt={u.prompt_tokens} completion={u.completion_tokens} "
+                   f"total={u.total_tokens} cost_usd={u.cost_usd:.6f} "
+                   f"mission={u.mission_id or '-'}")
         for tr in ledger.history(args.task_id):
             _print(out, f"  state: {tr.at} {tr.from_status}->{tr.to_status} "
                         f"by {tr.actor}: {tr.reason}")
@@ -380,14 +388,18 @@ def _build_models(grants: Mapping[str, object], kind: str,
                   config: ForgeConfig) -> dict[str, ModelBackend]:
     from forge.model.fake import FakeModel
     from forge.model.ollama_backend import OllamaBackend
+    from forge.model.openai_backend import OpenAICompatibleBackend
 
     models: dict[str, ModelBackend]
     if kind == "fake":
         models = {role: FakeModel([]) for role in grants}
     else:
-        backend = OllamaBackend(
-            model=config.model.default,
-            timeout_s=float(config.limits.max_steps_per_run * 60),
+        backend: ModelBackend = (
+            OpenAICompatibleBackend.from_env() if kind == "openai"
+            else OllamaBackend(
+                model=config.model.default,
+                timeout_s=float(config.limits.max_steps_per_run * 60),
+            )
         )
         models = {role: backend for role in grants}
     return models
