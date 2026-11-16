@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from forge.config import GateSpec
 from forge.ledger import REVIEW, TESTING, TaskLedger
+from forge.plugins import GateRunner
 
 
 class GateOutcome(BaseModel):
@@ -40,13 +41,42 @@ class GatesReport:
         return "\n".join(lines)
 
 
-def run_gate(spec: GateSpec, cwd: Path, timeout_s: float = 900.0) -> GateOutcome:
-    """Execute one gate command. Exit code 0 = pass; anything else = fail.
+def _plugin_outcome(spec: GateSpec, cwd: Path, timeout_s: float,
+                    runner: GateRunner) -> GateOutcome:
+    try:
+        outcome = runner(spec, cwd, timeout_s)
+    except Exception as exc:  # a broken plugin is a failed gate, not a crash
+        return GateOutcome(
+            gate=spec.name, command=spec.command or f"plugin:{spec.runner}",
+            exit_code=127, passed=False,
+            output_tail=f"plugin gate runner failed: {exc}",
+        )
+    if not isinstance(outcome, GateOutcome):
+        return GateOutcome(
+            gate=spec.name, command=spec.command or f"plugin:{spec.runner}",
+            exit_code=127, passed=False,
+            output_tail="plugin gate runner returned an invalid outcome",
+        )
+    return outcome
+
+
+def run_gate(spec: GateSpec, cwd: Path, timeout_s: float = 900.0,
+             gate_runners: dict[str, GateRunner] | None = None) -> GateOutcome:
+    """Execute one gate: a plugin runner when named, else an argv command.
 
     Commands are split with POSIX shlex and run without a shell: gate specs
     must be simple argv-style commands (no pipes or redirection), and forward
     slashes work on Windows because CreateProcess accepts them directly.
     """
+    if spec.runner is not None:
+        runner = (gate_runners or {}).get(spec.runner)
+        if runner is None:
+            return GateOutcome(
+                gate=spec.name, command=spec.command or f"plugin:{spec.runner}",
+                exit_code=127, passed=False,
+                output_tail=f"unknown plugin gate runner {spec.runner!r}",
+            )
+        return _plugin_outcome(spec, cwd, timeout_s, runner)
     argv = shlex.split(spec.command, posix=True)
     # ``{python}`` is replaced with the interpreter running Forge, so gate
     # commands never depend on a bare "python" being on PATH or on a
@@ -95,6 +125,7 @@ def run_gates_for_task(
     specs: list[GateSpec],
     workspaces: dict[str, str],
     timeout_s: float = 900.0,
+    gate_runners: dict[str, GateRunner] | None = None,
 ) -> GatesReport:
     """Run all gates for a task and record each result in the ledger.
 
@@ -115,7 +146,7 @@ def run_gates_for_task(
             raise ValueError(
                 f"gate {spec.name!r} references unknown workspace {spec.workspace!r}"
             ) from None
-        outcome = run_gate(spec, cwd, timeout_s)
+        outcome = run_gate(spec, cwd, timeout_s, gate_runners)
         payload = json.dumps(outcome.model_dump(), sort_keys=True)
         ledger.record_gates(task_id, payload, source=f"gate_runner:{spec.name}")
         outcomes.append(outcome)

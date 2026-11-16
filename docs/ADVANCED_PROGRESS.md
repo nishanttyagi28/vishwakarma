@@ -135,3 +135,17 @@ are green.
   escaping for hostile task ids, titles and payloads.
 - Added tests for detail metadata, gate diffs, mission timeline, graph,
   auto-refresh, hostile mission ids and the loopback bind address.
+
+## A-010 — Plugin system for gate runners and roles
+
+- Added `forge/plugins.py`: discovery from the `vishwakarma.plugins` entry-point
+  group and a `plugins/` folder (override with `FORGE_PLUGINS_DIR`), with
+  `PluginRegistry` for gate runners and additive roles.
+- Gate specs may name a `runner`; plugin runners return `GateOutcome`. Unknown,
+  crashing or malformed runners are recorded as FAILED gates (exit 127), never
+  crash the trusted gate runner, and their results are hash-stamped normally.
+- Plugin roles are additive only: a plugin cannot override a built-in role.
+  `chief` merges plugin roles into the YAML grants before dispatch.
+- Added `plugins/example_gate.py` (marker-file gate + `release_auditor` role)
+  and [`docs/PLUGINS.md`](PLUGINS.md). Tests cover folder/entry-point
+  discovery, execution, failures, collisions, role merge and the example.

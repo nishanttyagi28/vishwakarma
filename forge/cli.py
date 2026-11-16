@@ -298,7 +298,11 @@ def _handle_gate(args: argparse.Namespace, ledger: TaskLedger,
             workspaces.setdefault(ws_name, config.workspaces[ws_name])
     if not specs:
         raise ValueError("no gates configured for the requested scope")
-    report = run_gates_for_task(ledger, args.task_id, specs, workspaces, args.timeout)
+    from forge.plugins import discover_plugins
+
+    plugins = discover_plugins()
+    report = run_gates_for_task(ledger, args.task_id, specs, workspaces,
+                                args.timeout, plugins.gate_runners)
     _print(out, report.summary())
     _print(out, "GATES PASSED" if report.passed else "GATES FAILED")
     exit_code = EXIT_OK if report.passed else EXIT_GATES_FAILED
@@ -410,10 +414,12 @@ def _handle_chief(args: argparse.Namespace, ledger: TaskLedger,
     from forge.chief import ChiefEngineer
     from forge.journal import DecisionJournal
     from forge.permissions import load_roles
+    from forge.plugins import discover_plugins, merge_roles
     from forge.prompting import PromptRegistry
 
     out: list[str] = []
-    grants = load_roles(REPO_ROOT / "forge" / "roles.yaml")
+    plugins = discover_plugins()
+    grants = merge_roles(load_roles(REPO_ROOT / "forge" / "roles.yaml"), plugins)
     checker = PermissionChecker(grants, config.workspaces)
     registry = PromptRegistry(
         config_path.parent / "forge-prompts.sqlite3",
@@ -426,6 +432,7 @@ def _handle_chief(args: argparse.Namespace, ledger: TaskLedger,
             config, ledger, registry, journal, checker, models,
             transcript_dir=config_path.parent / "runs",
             max_steps_per_run=config.limits.max_steps_per_run,
+            plugins=plugins,
         )
         if args.ccmd == "run":
             outcome = chief_eng.execute_task(args.task)

@@ -13,8 +13,10 @@ class ModelConfig(BaseModel):
 
 class GateSpec(BaseModel):
     name: str
-    command: str
+    command: str = ""
     workspace: str
+    runner: str | None = None
+    """Optional plugin gate-runner name; when set, ``command`` is ignored."""
 
 
 class LimitsConfig(BaseModel):

@@ -47,6 +47,7 @@ from forge.ledger import (
 )
 from forge.model.base import Message, ModelBackend, ModelUsage
 from forge.permissions import PermissionChecker
+from forge.plugins import PluginRegistry
 from forge.prompting import (
     APPROVED_FIRST_PASS,
     REVISED_ONCE,
@@ -125,6 +126,7 @@ class ChiefEngineer:
         token_cap: int = 12000,
         max_steps_per_run: int = 30,
         mission_id: str = "",
+        plugins: PluginRegistry | None = None,
     ) -> None:
         self.config = config
         self.ledger = ledger
@@ -137,6 +139,7 @@ class ChiefEngineer:
         self.token_cap = token_cap
         self.max_steps = max_steps_per_run
         self.mission_id = mission_id
+        self.plugins = plugins or PluginRegistry()
 
     # --- PA pipeline ----------------------------------------------------------
     # ADR-0004: PA curation is single-shot structured judgement, not a ReAct
@@ -546,7 +549,10 @@ class ChiefEngineer:
         }) or list(self.config.gates)
         specs = [g for name, ws_gates in self.config.gates.items()
                  if name in gate_ws for g in ws_gates]
-        gates = run_gates_for_task(self.ledger, task.id, specs, self.config.workspaces)
+        gates = run_gates_for_task(
+            self.ledger, task.id, specs, self.config.workspaces,
+            gate_runners=self.plugins.gate_runners,
+        )
         gates_id = self._trace(
             task.id, sender="chief", receiver="gate_runner",
             kind=KIND_GATES, parent=report_id, objective=task.title,
@@ -675,6 +681,7 @@ class ChiefEngineer:
             transcript_dir=self.transcript_dir,
             reviewer_role=self.reviewer_role, token_cap=self.token_cap,
             max_steps_per_run=self.max_steps, mission_id=self.mission_id,
+            plugins=self.plugins,
         )
 
     def _execute_isolated(self, task_id: str,
